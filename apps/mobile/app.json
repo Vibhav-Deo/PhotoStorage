@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "Photo Archive",
+    "slug": "photo-archive",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "photoarchive",
+    "platforms": ["ios", "android"],
+    "sdkVersion": "57.0.0",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "com.photoarchive.app",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Photo Archive needs access to your photo library to back up your photos and videos.",
+        "NSPhotoLibraryAddUsageDescription": "Photo Archive needs permission to save exported photos to your library.",
+        "NSCameraUsageDescription": "Photo Archive needs camera access to capture new photos."
+      }
+    },
+    "android": {
+      "package": "com.photoarchive.app",
+      "permissions": [
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "ACCESS_MEDIA_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_DATA_SYNC",
+        "RECEIVE_BOOT_COMPLETED"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Photo Archive needs access to your photo library to back up your photos and videos.",
+          "savePhotosPermission": "Photo Archive needs permission to save exported photos to your library.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
+      [
+        "expo-background-fetch",
+        {
+          "backgroundFetchInterval": 900
+        }
+      ],
+      "expo-sqlite",
+      "expo-image-manipulator"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "photo-archive"
+      }
+    }
+  }
+}

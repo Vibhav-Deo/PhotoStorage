@@ -1,0 +1,15 @@
+{
+  "//": "Metro bundles this workspace from source; no emit. Bundler module resolution so Metro resolves bare specifiers and .ts extensions. jsx is react-jsx for React 19.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM"],
+    "types": ["react", "react-native"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "index.ts", "App.tsx"]
+}

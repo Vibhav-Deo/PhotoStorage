@@ -1,0 +1,42 @@
+// Shared compiler options. Every workspace extends this file and adds only paths,
+// libs, and whether it emits. spikes/ is deliberately outside every project.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "moduleDetection": "force",
+
+    // Empty by default so Node globals never leak into React Native code.
+    // Each workspace opts in to the ambient types it actually has.
+    "types": [],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    // Types must be erasable, so `node file.ts` and Metro's transform never need
+    // more than type stripping. Bans enums, namespaces, and parameter properties.
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+
+    // Relative imports carry the .ts extension and tsc rewrites them to .js on
+    // emit, so one import style works under Node's type stripping, Vitest, Metro,
+    // and tsc alike.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  }
+}

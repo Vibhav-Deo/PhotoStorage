@@ -1,0 +1,6 @@
+{
+  "name": "Photo Archive",
+  "description": "Cross-platform photo and video archive with semantic search, timeline browsing, album management, and import capabilities.",
+  "permissions": [],
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

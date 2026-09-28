@@ -1,0 +1,18 @@
+node_modules/
+
+# Model weights are downloaded, never committed. See README.md for the commands.
+.models/
+
+# Generated fixture previews; regenerate with `npm run dump-fixtures`.
+fixture-previews/
+
+# Generated image fixtures; regenerate with `npm run make-fixtures`.
+sqlite-heic-probe/assets/
+
+# Probe database written by the on-device SQLite run.
+*.db
+
+# Expo prebuild output.
+ios/
+android/
+.expo/

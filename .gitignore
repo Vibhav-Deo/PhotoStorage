@@ -1,0 +1,18 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Expo prebuild output, once apps/mobile exists (task 4.1).
+apps/mobile/ios/
+apps/mobile/android/
+apps/mobile/.expo/
+
+# CDK synth output, once infra exists (phase 3).
+infra/cdk.out/
+
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example

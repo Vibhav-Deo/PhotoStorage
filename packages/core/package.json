@@ -1,0 +1,50 @@
+{
+  "name": "@photo-archive/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Domain types, key derivation, SQLite schema, ObjectStore contract, hashing, and the job queue. Shared by the importer and the app. No cloud dependency.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./src/index.ts"
+    },
+    "./node-sqlite": {
+      "types": "./dist/db/nodeSqliteDriver.d.ts",
+      "import": "./dist/db/nodeSqliteDriver.js",
+      "default": "./src/db/nodeSqliteDriver.ts"
+    },
+    "./local-fs-store": {
+      "types": "./dist/store/localFsObjectStore.d.ts",
+      "import": "./dist/store/localFsObjectStore.js",
+      "default": "./src/store/localFsObjectStore.ts"
+    },
+    "./node-hash": {
+      "types": "./dist/hash/nodeHash.d.ts",
+      "import": "./dist/hash/nodeHash.js",
+      "default": "./src/hash/nodeHash.ts"
+    },
+    "./store-conformance": {
+      "types": "./dist/store/conformance.d.ts",
+      "import": "./dist/store/conformance.js",
+      "default": "./src/store/conformance.ts"
+    },
+    "./s3-store": {
+      "types": "./dist/store/s3ObjectStore.d.ts",
+      "import": "./dist/store/s3ObjectStore.js",
+      "default": "./src/store/s3ObjectStore.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build tsconfig.json",
+    "typecheck": "tsc --build tsconfig.json",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.840.0"
+  }
+}

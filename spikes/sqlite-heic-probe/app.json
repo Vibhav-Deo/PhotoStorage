@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "FTS5 + HEIC Spike",
+    "slug": "fts5-heic-spike",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "dev.spike.ftsheic",
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "dev.spike.ftsheic"
+    },
+    "plugins": [
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "This spike reads one HEIC from your library to confirm the decode path works.",
+          "savePhotosPermission": false,
+          "isAccessMediaLocationEnabled": true
+        }
+      ]
+    ]
+  }
+}

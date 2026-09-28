@@ -1,0 +1,17 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": [
+    "*.ts",
+    "*.tsx",
+    "*.d.ts",
+    "src/**/*.ts",
+    "../sqlite-heic-probe-core/src/**/*.ts"
+  ],
+  "exclude": ["node_modules", "**/*.test.ts"]
+}

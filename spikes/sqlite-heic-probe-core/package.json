@@ -1,0 +1,16 @@
+{
+  "name": "sqlite-heic-probe-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure, runtime-agnostic logic shared by task 0.2's on-device probe and its off-device reference: the FTS5 capability detector, the OCR search corpus, both index implementations (FTS5 and the token-table fallback), the grading harness, and the downscale geometry. No expo, no React Native, no node:sqlite.",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "5.9.2",
+    "vitest": "3.2.4"
+  }
+}

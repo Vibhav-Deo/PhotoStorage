@@ -1,0 +1,25 @@
+{
+  "name": "@photo-archive/importer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Node CLI for bulk Google Takeout import: metadata repair, hashing, derivatives, embeddings, upload, verification, manifest. Bulk ingest must not depend on the mobile device (Req 12.7).",
+  "//bin": "Declared once the CLI entry point exists (phase 2). A bin pointing at an unbuilt file breaks install.",
+  "files": [
+    "dist",
+    "THIRD_PARTY_NOTICES.txt"
+  ],
+  "scripts": {
+    "build": "tsc --build tsconfig.json",
+    "typecheck": "tsc --build tsconfig.json",
+    "//fixtures": "Materializes the Takeout fixture corpus into a directory so a pairing failure can be inspected on disk. The tests build it into a temp dir instead.",
+    "fixtures": "node src/takeout/fixtures/materialize.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@photo-archive/core": "0.0.0",
+    "onnxruntime-node": "1.22.0",
+    "sharp": "0.35.4",
+    "thumbhash": "0.1.1"
+  }
+}

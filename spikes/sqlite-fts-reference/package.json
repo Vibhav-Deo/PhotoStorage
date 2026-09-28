@@ -1,0 +1,16 @@
+{
+  "name": "spike-sqlite-fts-reference",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Off-device reference for task 0.2's search half. Runs the same corpus, the same two index implementations, and the same grading as the on-device probe, against node:sqlite — whose bundled SQLite is built with FTS5 at a version within one patch of the amalgamation expo-sqlite vendors. Answers everything about FTS5 semantics without a phone; the shipped-binary question still needs one.",
+  "scripts": {
+    "reference": "node --experimental-sqlite --disable-warning=ExperimentalWarning --import tsx run.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "4.20.6",
+    "typescript": "5.9.2"
+  }
+}
