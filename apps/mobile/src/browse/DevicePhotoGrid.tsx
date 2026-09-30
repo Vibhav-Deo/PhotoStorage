@@ -238,14 +238,14 @@ export function DevicePhotoGrid({
                 cachePolicy="memory-disk"
               />
 
-              {/* S3 Backed Up Status Badge */}
-              {isBackedUp && (
-                <View style={styles.backedUpBadge}>
-                  <Text style={styles.backedUpBadgeText}>☁️ S3</Text>
+              {/* Subtle pending backup indicator only if not yet backed up, exactly like Google/Apple Photos */}
+              {!isBackedUp && (
+                <View style={styles.pendingBadge}>
+                  <Text style={styles.pendingBadgeIcon}>☁️</Text>
                 </View>
               )}
 
-              {/* Selection Checkbox */}
+              {/* Apple Photos Style Selection Checkbox */}
               {isSelectMode && (
                 <View
                   style={[
@@ -346,46 +346,44 @@ const styles = StyleSheet.create({
   },
   photoContainerSelected: {
     borderWidth: 2,
-    borderColor: '#9acd7c',
+    borderColor: '#0a84ff',
   },
-  backedUpBadge: {
+  pendingBadge: {
     position: 'absolute',
-    top: 4,
-    left: 4,
-    backgroundColor: 'rgba(12, 13, 11, 0.8)',
-    borderRadius: 4,
-    paddingHorizontal: 4,
-    paddingVertical: 2,
-    borderWidth: 1,
-    borderColor: 'rgba(154, 205, 124, 0.4)',
+    bottom: 5,
+    right: 5,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    borderRadius: 10,
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  backedUpBadgeText: {
-    color: '#9acd7c',
-    fontSize: 9,
-    fontWeight: '700',
-    fontFamily: 'monospace',
+  pendingBadgeIcon: {
+    fontSize: 10,
+    opacity: 0.9,
   },
   checkbox: {
     position: 'absolute',
-    top: 4,
-    right: 4,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    top: 6,
+    right: 6,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
   },
   checkboxSelected: {
-    backgroundColor: '#9acd7c',
+    backgroundColor: '#0a84ff',
   },
   checkboxUnselected: {
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.3)',
     borderWidth: 1.5,
-    borderColor: '#f2f4ec',
+    borderColor: 'rgba(255, 255, 255, 0.85)',
   },
   checkmark: {
-    color: '#10110f',
-    fontSize: 12,
+    color: '#ffffff',
+    fontSize: 13,
     fontWeight: '800',
   },
   modalMetaRow: {
@@ -396,25 +394,25 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   modalBackedUpPill: {
-    backgroundColor: 'rgba(154, 205, 124, 0.15)',
+    backgroundColor: 'rgba(10, 132, 255, 0.15)',
     borderWidth: 1,
-    borderColor: '#9acd7c',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
+    borderColor: '#0a84ff',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
   },
   modalBackedUpText: {
-    color: '#9acd7c',
-    fontSize: 10,
+    color: '#0a84ff',
+    fontSize: 11,
     fontWeight: '600',
   },
   modalLocalPill: {
-    backgroundColor: '#1f201d',
+    backgroundColor: '#1c1c1e',
     borderWidth: 1,
-    borderColor: '#3a3c36',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
+    borderColor: '#38383a',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
   },
   modalLocalText: {
     color: '#98a394',

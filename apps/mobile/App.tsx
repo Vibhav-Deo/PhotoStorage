@@ -17,23 +17,20 @@ import { CredentialProvider } from './src/credentials/credentialProvider.ts';
 import { uploadAssetToS3, type UploadResult } from './src/ingest/s3Uploader.ts';
 import { cognitoConfig, PHOTO_ARCHIVE_AWS } from './src/config/aws.ts';
 
-type ActiveTab = 'photos' | 'search' | 'reclaim' | 'cloud';
+type ActiveTab = 'library' | 'search' | 'storage';
 
-interface UploadModalState {
+interface UploadTaskState {
   readonly isUploading: boolean;
   readonly total: number;
   readonly current: number;
   readonly currentFilename: string;
   readonly statusText: string;
-  readonly currentHash: string;
-  readonly currentKey: string;
   readonly error?: string;
   readonly isComplete: boolean;
-  readonly successfulUploads: UploadResult[];
 }
 
 function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
+  if (bytes <= 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
@@ -44,37 +41,39 @@ function AppShell(): React.ReactElement {
   const db = useSQLiteContext();
   const driver = useMemo(() => new ExpoSqliteDriver(db), [db]);
 
+  // Auth State
   const [session, setSession] = useState<SignInSession | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [isAccountSheetOpen, setIsAccountSheetOpen] = useState(false);
 
-  // Tabs & Navigation State
-  const [activeTab, setActiveTab] = useState<ActiveTab>('photos');
+  // Tabs & Navigation
+  const [activeTab, setActiveTab] = useState<ActiveTab>('library');
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+
+  // Selection Mode (Apple Photos pattern)
   const [isSelectMode, setIsSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deviceAssets, setDeviceAssets] = useState<DevicePhoto[]>([]);
 
-  // S3 Backed-up tracker loaded from local SQLite
+  // SQLite Backed-Up State
   const [backedUpIds, setBackedUpIds] = useState<Set<string>>(new Set());
-  const [sqliteLoaded, setSqliteLoaded] = useState(false);
 
-  // Upload modal state
-  const [uploadModal, setUploadModal] = useState<UploadModalState | null>(null);
+  // Upload progress
+  const [uploadTask, setUploadTask] = useState<UploadTaskState | null>(null);
 
-  // Reclaim state
+  // Space Reclamation
   const [purgedIds, setPurgedIds] = useState<Set<string>>(new Set());
   const [reclaimedBytes, setReclaimedBytes] = useState(0);
 
-  // Load existing backed-up assets from SQLite on launch
+  // Read verified state from local SQLite
   const refreshBackedUpFromSql = useCallback(async () => {
     try {
       const rows = await driver.all<{ local_id: string }>(
         `SELECT local_id FROM local_assets WHERE hash_state = 1`,
       );
       setBackedUpIds(new Set(rows.map((r) => r.local_id)));
-      setSqliteLoaded(true);
     } catch (err) {
       console.warn('Could not read backed-up assets from SQLite:', err);
     }
@@ -88,12 +87,14 @@ function AppShell(): React.ReactElement {
       });
   }, [db, refreshBackedUpFromSql]);
 
+  // Sign In Flow
   const handleSignIn = async (): Promise<void> => {
     setAuthError(null);
     setIsSigningIn(true);
     try {
       const newSession = await signIn(cognitoConfig, 'Cognito');
       setSession(newSession);
+      setIsAccountSheetOpen(false);
     } catch (error: unknown) {
       setAuthError(error instanceof AuthError ? error.message : 'Sign-in failed');
     } finally {
@@ -101,10 +102,15 @@ function AppShell(): React.ReactElement {
     }
   };
 
+  // Sign Out Flow (Guaranteed clean session clear)
   const handleSignOut = async (): Promise<void> => {
-    if (session) {
-      await signOut(cognitoConfig, session.tokens.accessToken).catch(() => undefined);
+    try {
+      if (session) {
+        await signOut(cognitoConfig, session.tokens.accessToken).catch(() => undefined);
+      }
+    } finally {
       setSession(null);
+      setIsAccountSheetOpen(false);
     }
   };
 
@@ -128,13 +134,18 @@ function AppShell(): React.ReactElement {
     setSelectedIds(new Set());
   };
 
-  // Real S3 Upload Pipeline
-  const handleUploadSelectedToS3 = async (assetsToUpload: DevicePhoto[]) => {
+  const cancelSelectionMode = () => {
+    setIsSelectMode(false);
+    setSelectedIds(new Set());
+  };
+
+  // Real S3 Upload
+  const performUpload = async (assetsToUpload: DevicePhoto[]) => {
     if (assetsToUpload.length === 0) return;
 
     if (!session) {
-      setActiveTab('cloud');
-      setAuthError('Sign in with AWS Cognito to upload photos directly to your S3 bucket.');
+      setIsAccountSheetOpen(true);
+      setAuthError('Sign in with your account to back up photos to private cloud storage.');
       return;
     }
 
@@ -146,18 +157,13 @@ function AppShell(): React.ReactElement {
       refreshToken: session.tokens.refreshToken,
     });
 
-    const successful: UploadResult[] = [];
-
-    setUploadModal({
+    setUploadTask({
       isUploading: true,
       total: assetsToUpload.length,
       current: 0,
       currentFilename: assetsToUpload[0]?.filename ?? 'Photo',
-      statusText: 'Initializing S3 upload...',
-      currentHash: '',
-      currentKey: '',
+      statusText: 'Preparing upload...',
       isComplete: false,
-      successfulUploads: [],
     });
 
     try {
@@ -165,68 +171,54 @@ function AppShell(): React.ReactElement {
         const asset = assetsToUpload[i];
         if (!asset) continue;
 
-        setUploadModal((prev) =>
+        setUploadTask((prev) =>
           prev
             ? {
                 ...prev,
                 current: i + 1,
                 currentFilename: asset.filename ?? `Photo ${i + 1}`,
-                statusText: `Processing ${asset.filename ?? 'photo'}...`,
+                statusText: `Uploading ${asset.filename ?? 'photo'}...`,
               }
             : null,
         );
 
-        const result = await uploadAssetToS3(
-          asset,
-          credentialProvider,
-          driver,
-          (step) => {
-            setUploadModal((prev) =>
-              prev
-                ? {
-                    ...prev,
-                    statusText:
-                      step.status === 'reading'
-                        ? 'Reading device bytes...'
-                        : step.status === 'hashing'
-                        ? 'Computing SHA-256 content address...'
-                        : step.status === 'signing'
-                        ? 'Signing AWS SigV4 PUT request...'
-                        : step.status === 'uploading'
-                        ? 'Uploading to S3 bucket...'
-                        : step.status === 'recording'
-                        ? 'Recording in SQLite ledger...'
-                        : 'Done',
-                    currentHash: step.hash ?? prev.currentHash,
-                  }
-                : null,
-            );
-          },
-        );
+        await uploadAssetToS3(asset, credentialProvider, driver, (step) => {
+          setUploadTask((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  statusText:
+                    step.status === 'reading'
+                      ? 'Reading file...'
+                      : step.status === 'hashing'
+                      ? 'Hashing SHA-256...'
+                      : step.status === 'uploading'
+                      ? 'Transferring to S3...'
+                      : 'Securing ledger...',
+                }
+              : null,
+          );
+        });
 
-        successful.push(result);
         setBackedUpIds((prev) => new Set([...prev, asset.id]));
       }
 
-      setUploadModal((prev) =>
+      setUploadTask((prev) =>
         prev
           ? {
               ...prev,
               isUploading: false,
               isComplete: true,
-              statusText: `Successfully uploaded ${successful.length} items to S3.`,
-              successfulUploads: successful,
+              statusText: `Backed up ${assetsToUpload.length} items successfully.`,
             }
           : null,
       );
 
-      // Refresh SQLite status
       await refreshBackedUpFromSql();
-      setSelectedIds(new Set());
-      setIsSelectMode(false);
+      cancelSelectionMode();
     } catch (err: unknown) {
-      console.error('Real S3 Upload Failed:', err);
-      setUploadModal((prev) =>
+      console.error('Upload Error:', err);
+      setUploadTask((prev) =>
         prev
           ? {
               ...prev,
@@ -239,7 +231,7 @@ function AppShell(): React.ReactElement {
     }
   };
 
-  // Reclaim calculations based on real database records
+  // Reclaim calculations
   const eligibleForPurge = deviceAssets.filter(
     (a) => backedUpIds.has(a.id) && !purgedIds.has(a.id),
   );
@@ -249,7 +241,6 @@ function AppShell(): React.ReactElement {
   );
 
   const handlePurgeEligible = async () => {
-    // Record purge in SQLite: update local_state to 3 (Purged)
     for (const asset of eligibleForPurge) {
       await driver.run(
         `UPDATE assets SET local_state = 3 WHERE hash IN (
@@ -262,126 +253,119 @@ function AppShell(): React.ReactElement {
     setPurgedIds((prev) => new Set([...prev, ...eligibleForPurge.map((a) => a.id)]));
   };
 
+  const unbackedCount = deviceAssets.filter((a) => !backedUpIds.has(a.id)).length;
+
   return (
-    <View style={styles.mainContainer}>
-      {/* ── Top Header Bar ────────────────────────────────────────── */}
-      <View style={styles.headerBar}>
-        <View style={styles.headerLeft}>
-          <Text style={styles.appTitle}>Photo Archive</Text>
-          <View style={styles.statusRow}>
-            <View
-              style={[
-                styles.statusDot,
-                { backgroundColor: session ? '#9acd7c' : '#ef4444' },
-              ]}
-            />
-            <Text style={styles.statusSubtitle}>
-              {session
-                ? `S3: ${PHOTO_ARCHIVE_AWS.bucket.slice(0, 18)}...`
-                : 'Not Signed In (Sign in to sync S3)'}
+    <View style={styles.appContainer}>
+      {/* ── Top Apple/Google Photos Style Header ─────────────────── */}
+      <View style={styles.topHeader}>
+        {isSelectMode ? (
+          // Selection Header
+          <View style={styles.selectionHeaderRow}>
+            <TouchableOpacity onPress={cancelSelectionMode} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+              <Text style={styles.headerActionText}>Cancel</Text>
+            </TouchableOpacity>
+
+            <Text style={styles.selectionTitle}>
+              {selectedIds.size === 0
+                ? 'Select Items'
+                : `${selectedIds.size} Selected`}
             </Text>
+
+            <TouchableOpacity
+              onPress={selectAll}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            >
+              <Text style={styles.headerActionText}>Select All</Text>
+            </TouchableOpacity>
           </View>
-        </View>
+        ) : (
+          // Standard Navigation Header
+          <View style={styles.standardHeaderRow}>
+            <View>
+              <Text style={styles.navLargeTitle}>
+                {activeTab === 'library'
+                  ? 'Photos'
+                  : activeTab === 'search'
+                  ? 'Search'
+                  : 'Storage'}
+              </Text>
+              <View style={styles.syncStatusRow}>
+                <View
+                  style={[
+                    styles.syncStatusDot,
+                    { backgroundColor: session ? '#34c759' : '#ff9f0a' },
+                  ]}
+                />
+                <Text style={styles.syncStatusLabel}>
+                  {session
+                    ? unbackedCount === 0
+                      ? 'Backup complete'
+                      : `${unbackedCount} items to back up`
+                    : 'Offline • Tap avatar to sign in'}
+                </Text>
+              </View>
+            </View>
 
-        {/* Header Action Buttons */}
-        <View style={styles.headerActions}>
-          <TouchableOpacity
-            style={[styles.iconButton, isSearchOpen && styles.iconButtonActive]}
-            onPress={() => {
-              setIsSearchOpen((prev) => !prev);
-              if (activeTab !== 'photos' && activeTab !== 'search') {
-                setActiveTab('photos');
-              }
-            }}
-          >
-            <Text style={styles.iconButtonText}>🔍</Text>
-          </TouchableOpacity>
+            {/* Right Action Icons */}
+            <View style={styles.headerRightActions}>
+              <TouchableOpacity
+                style={styles.headerIconBtn}
+                onPress={() => {
+                  setIsSearchOpen((prev) => !prev);
+                  if (activeTab !== 'library' && activeTab !== 'search') {
+                    setActiveTab('library');
+                  }
+                }}
+              >
+                <Text style={styles.headerIconGlyph}>🔍</Text>
+              </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.iconButton, isSelectMode && styles.iconButtonActive]}
-            onPress={() => setIsSelectMode((prev) => !prev)}
-          >
-            <Text style={styles.iconButtonText}>{isSelectMode ? '✕' : '☑️'}</Text>
-          </TouchableOpacity>
+              {activeTab === 'library' && (
+                <TouchableOpacity
+                  style={styles.selectTextBtn}
+                  onPress={() => setIsSelectMode(true)}
+                >
+                  <Text style={styles.selectTextBtnLabel}>Select</Text>
+                </TouchableOpacity>
+              )}
 
-          <TouchableOpacity
-            style={styles.backupActionButton}
-            onPress={() => {
-              if (isSelectMode && selectedIds.size > 0) {
-                const toUpload = deviceAssets.filter((a) => selectedIds.has(a.id));
-                void handleUploadSelectedToS3(toUpload);
-              } else {
-                const unbacked = deviceAssets.filter((a) => !backedUpIds.has(a.id));
-                void handleUploadSelectedToS3(unbacked.slice(0, 20));
-              }
-            }}
-          >
-            <Text style={styles.backupActionButtonText}>
-              {isSelectMode && selectedIds.size > 0
-                ? `Upload (${selectedIds.size})`
-                : '☁️ S3 Backup'}
-            </Text>
-          </TouchableOpacity>
-        </View>
+              {/* Profile Avatar (Google Photos / Apple ID pattern) */}
+              <TouchableOpacity
+                style={styles.avatarButton}
+                onPress={() => setIsAccountSheetOpen(true)}
+              >
+                <Text style={styles.avatarInitial}>
+                  {session ? (session.sub.slice(0, 1).toUpperCase() || 'U') : '👤'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
       </View>
 
-      {/* ── Interactive Search Bar Dropdown ────────────────────────── */}
+      {/* ── Search Bar Dropdown ──────────────────────────────────── */}
       {isSearchOpen && (
-        <View style={styles.searchBarContainer}>
+        <View style={styles.searchBarWrapper}>
           <TextInput
-            style={styles.searchInput}
-            placeholder="Filter by filename, date, or type..."
-            placeholderTextColor="#788075"
+            style={styles.searchTextInput}
+            placeholder="Search by name, date, or format..."
+            placeholderTextColor="#8e8e93"
             value={searchQuery}
             onChangeText={setSearchQuery}
             autoFocus
           />
           {searchQuery.length > 0 && (
-            <TouchableOpacity
-              onPress={() => setSearchQuery('')}
-              style={styles.searchClearBtn}
-            >
-              <Text style={styles.searchClearText}>✕</Text>
+            <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.searchClearBtn}>
+              <Text style={styles.searchClearGlyph}>✕</Text>
             </TouchableOpacity>
           )}
         </View>
       )}
 
-      {/* ── Multi-Select Control Ribbon ────────────────────────────── */}
-      {isSelectMode && (
-        <View style={styles.selectionRibbon}>
-          <Text style={styles.selectionCountText}>
-            {selectedIds.size} of {deviceAssets.length} selected
-          </Text>
-          <View style={styles.selectionBtnGroup}>
-            <TouchableOpacity onPress={selectAll} style={styles.ribbonBtn}>
-              <Text style={styles.ribbonBtnText}>Select All</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={clearSelection} style={styles.ribbonBtn}>
-              <Text style={styles.ribbonBtnText}>Clear</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => {
-                const toUpload = deviceAssets.filter((a) => selectedIds.has(a.id));
-                void handleUploadSelectedToS3(toUpload);
-              }}
-              disabled={selectedIds.size === 0}
-              style={[
-                styles.ribbonUploadBtn,
-                selectedIds.size === 0 && styles.btnDisabled,
-              ]}
-            >
-              <Text style={styles.ribbonUploadBtnText}>
-                Upload ({selectedIds.size})
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-
-      {/* ── Main Tab Content ────────────────────────────────────────── */}
-      <View style={styles.tabContentContainer}>
-        {activeTab === 'photos' && (
+      {/* ── Main Tab Content ──────────────────────────────────────── */}
+      <View style={styles.tabCanvas}>
+        {activeTab === 'library' && (
           <DevicePhotoGrid
             searchQuery={searchQuery}
             isSelectMode={isSelectMode}
@@ -393,51 +377,36 @@ function AppShell(): React.ReactElement {
         )}
 
         {activeTab === 'search' && (
-          <View style={styles.searchTabContainer}>
+          <View style={styles.searchTabBody}>
             <TextInput
-              style={styles.searchInput}
-              placeholder="Search filenames, tags, or dates..."
-              placeholderTextColor="#788075"
+              style={styles.searchTextInput}
+              placeholder="Search library..."
+              placeholderTextColor="#8e8e93"
               value={searchQuery}
               onChangeText={setSearchQuery}
             />
-            <View style={styles.filterChipRow}>
+            <View style={styles.pillsRow}>
               <TouchableOpacity
-                style={[styles.filterChip, searchQuery === '' && styles.filterChipActive]}
+                style={[styles.pill, searchQuery === '' && styles.pillActive]}
                 onPress={() => setSearchQuery('')}
               >
-                <Text
-                  style={[
-                    styles.filterChipText,
-                    searchQuery === '' && styles.filterChipTextActive,
-                  ]}
-                >
-                  All Media
+                <Text style={[styles.pillText, searchQuery === '' && styles.pillTextActive]}>
+                  All
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.filterChip, searchQuery === 'jpg' && styles.filterChipActive]}
+                style={[styles.pill, searchQuery === 'jpg' && styles.pillActive]}
                 onPress={() => setSearchQuery('jpg')}
               >
-                <Text
-                  style={[
-                    styles.filterChipText,
-                    searchQuery === 'jpg' && styles.filterChipTextActive,
-                  ]}
-                >
+                <Text style={[styles.pillText, searchQuery === 'jpg' && styles.pillTextActive]}>
                   Photos
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.filterChip, searchQuery === 'video' && styles.filterChipActive]}
+                style={[styles.pill, searchQuery === 'video' && styles.pillActive]}
                 onPress={() => setSearchQuery('video')}
               >
-                <Text
-                  style={[
-                    styles.filterChipText,
-                    searchQuery === 'video' && styles.filterChipTextActive,
-                  ]}
-                >
+                <Text style={[styles.pillText, searchQuery === 'video' && styles.pillTextActive]}>
                   Videos
                 </Text>
               </TouchableOpacity>
@@ -450,237 +419,303 @@ function AppShell(): React.ReactElement {
           </View>
         )}
 
-        {activeTab === 'reclaim' && (
-          <ScrollView style={styles.reclaimContainer}>
-            <View style={styles.reclaimCard}>
-              <Text style={styles.reclaimCardEyebrow}>SPACE RECLAMATION</Text>
-              <Text style={styles.reclaimCardTitle}>
-                {formatBytes(eligibleBytes)} Reclaimable
+        {activeTab === 'storage' && (
+          <ScrollView style={styles.storageScroll}>
+            {/* Storage Hero Card */}
+            <View style={styles.storageCard}>
+              <Text style={styles.storageCardCategory}>DEVICE STORAGE</Text>
+              <Text style={styles.storageCardHighlight}>
+                {formatBytes(eligibleBytes)}
               </Text>
-              <Text style={styles.reclaimCardDesc}>
-                {eligibleForPurge.length} device originals have been verified in SQLite and confirmed in AWS S3 with SHA-256 content hashes.
+              <Text style={styles.storageCardSubtitle}>
+                Reclaimable Space Verified in Cloud
+              </Text>
+              <Text style={styles.storageCardBody}>
+                {eligibleForPurge.length} photos have been cryptographically verified in your private S3 archive. You can safely purge the device originals to free storage while keeping instant cached thumbnails.
               </Text>
 
               <TouchableOpacity
                 style={[
-                  styles.purgeButton,
-                  eligibleForPurge.length === 0 && styles.btnDisabled,
+                  styles.purgeActionBtn,
+                  eligibleForPurge.length === 0 && styles.purgeActionBtnDisabled,
                 ]}
                 disabled={eligibleForPurge.length === 0}
                 onPress={() => void handlePurgeEligible()}
               >
-                <Text style={styles.purgeButtonText}>
+                <Text style={styles.purgeActionBtnText}>
                   {eligibleForPurge.length > 0
-                    ? `Purge ${eligibleForPurge.length} Local Originals (${formatBytes(eligibleBytes)})`
-                    : 'All Verified Originals Reclaimed'}
+                    ? `Free ${formatBytes(eligibleBytes)} from Device`
+                    : 'Storage Optimized'}
                 </Text>
               </TouchableOpacity>
             </View>
 
-            <View style={styles.reclaimStatsRow}>
-              <View style={styles.statBox}>
-                <Text style={styles.statBoxNum}>{formatBytes(reclaimedBytes)}</Text>
-                <Text style={styles.statBoxLabel}>Total Freed</Text>
+            {/* Metrics Grid */}
+            <View style={styles.metricsGrid}>
+              <View style={styles.metricItem}>
+                <Text style={styles.metricNum}>{formatBytes(reclaimedBytes)}</Text>
+                <Text style={styles.metricLabel}>Total Freed</Text>
               </View>
-              <View style={styles.statBox}>
-                <Text style={styles.statBoxNum}>{backedUpIds.size}</Text>
-                <Text style={styles.statBoxLabel}>Backed Up S3</Text>
+              <View style={styles.metricItem}>
+                <Text style={styles.metricNum}>{backedUpIds.size}</Text>
+                <Text style={styles.metricLabel}>Archived</Text>
               </View>
-              <View style={styles.statBox}>
-                <Text style={styles.statBoxNum}>{purgedIds.size}</Text>
-                <Text style={styles.statBoxLabel}>Purged Locally</Text>
+              <View style={styles.metricItem}>
+                <Text style={styles.metricNum}>{purgedIds.size}</Text>
+                <Text style={styles.metricLabel}>Purged</Text>
               </View>
             </View>
 
-            <Text style={styles.reclaimSectionTitle}>Verification Guarantees</Text>
-            <View style={styles.guaranteeBox}>
-              <Text style={styles.guaranteeItem}>✓ Cryptographic SHA-256 content hash verified</Text>
-              <Text style={styles.guaranteeItem}>✓ S3 Intelligent-Tiering key layout ({'{prefix}/orig/{hash}'})</Text>
-              <Text style={styles.guaranteeItem}>✓ Local SQLite audit ledger updated</Text>
+            <View style={styles.guaranteeCard}>
+              <Text style={styles.guaranteeTitle}>Architecture Guarantees</Text>
+              <Text style={styles.guaranteeItem}>• SHA-256 byte-for-byte readback verification</Text>
+              <Text style={styles.guaranteeItem}>• S3 Intelligent-Tiering content-addressed storage</Text>
+              <Text style={styles.guaranteeItem}>• 256px thumbnails preserved for offline browsing</Text>
             </View>
           </ScrollView>
         )}
+      </View>
 
-        {activeTab === 'cloud' && (
-          <ScrollView style={styles.cloudContainer}>
-            <View style={styles.cloudCard}>
-              <Text style={styles.reclaimCardEyebrow}>AWS S3 INFRASTRUCTURE</Text>
-              <Text style={styles.cloudTitle}>Production S3 Storage</Text>
-              <Text style={styles.cloudBucketName}>
-                Bucket: {PHOTO_ARCHIVE_AWS.bucket}
-              </Text>
-              <Text style={styles.cloudRegion}>Region: {PHOTO_ARCHIVE_AWS.region}</Text>
-              <Text style={styles.cloudUserpool}>
-                Cognito Pool: {PHOTO_ARCHIVE_AWS.userPoolId}
-              </Text>
-              <Text style={styles.cloudUserpool}>
-                Identity Pool: {PHOTO_ARCHIVE_AWS.identityPoolId}
-              </Text>
+      {/* ── Selection Floating Action Bar (Apple Photos style) ────── */}
+      {isSelectMode && (
+        <View style={styles.floatingActionBar}>
+          <TouchableOpacity
+            style={styles.floatingSecondaryBtn}
+            onPress={clearSelection}
+            disabled={selectedIds.size === 0}
+          >
+            <Text style={[styles.floatingSecondaryText, selectedIds.size === 0 && styles.disabledText]}>
+              Clear
+            </Text>
+          </TouchableOpacity>
 
-              <View style={styles.divider} />
+          <TouchableOpacity
+            style={[
+              styles.floatingPrimaryBtn,
+              selectedIds.size === 0 && styles.floatingPrimaryBtnDisabled,
+            ]}
+            disabled={selectedIds.size === 0}
+            onPress={() => {
+              const toUpload = deviceAssets.filter((a) => selectedIds.has(a.id));
+              void performUpload(toUpload);
+            }}
+          >
+            <Text style={styles.floatingPrimaryText}>
+              {selectedIds.size === 0
+                ? 'Select Photos'
+                : `Back Up ${selectedIds.size} ${selectedIds.size === 1 ? 'Item' : 'Items'}`}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
-              {session ? (
-                <View>
-                  <Text style={styles.sessionStatus}>✓ Authenticated to AWS Cognito</Text>
-                  <Text style={styles.subText}>Tenant Sub: {session.sub}</Text>
-                  <Text style={styles.subText}>
-                    Tokens expire: {new Date(session.tokens.expiresAt * 1000).toLocaleTimeString()}
+      {/* ── Apple Photos Bottom Tab Bar ──────────────────────────── */}
+      {!isSelectMode && (
+        <View style={styles.bottomNavigation}>
+          <TouchableOpacity
+            style={styles.tabItem}
+            onPress={() => setActiveTab('library')}
+          >
+            <Text style={styles.tabGlyph}>🖼️</Text>
+            <Text style={[styles.tabTitle, activeTab === 'library' && styles.tabTitleActive]}>
+              Photos
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.tabItem}
+            onPress={() => setActiveTab('search')}
+          >
+            <Text style={styles.tabGlyph}>🔍</Text>
+            <Text style={[styles.tabTitle, activeTab === 'search' && styles.tabTitleActive]}>
+              Search
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.tabItem}
+            onPress={() => setActiveTab('storage')}
+          >
+            <Text style={styles.tabGlyph}>🛡️</Text>
+            <Text style={[styles.tabTitle, activeTab === 'storage' && styles.tabTitleActive]}>
+              Storage
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* ── Profile & Account Sheet (Google Photos / Apple ID) ─────── */}
+      <Modal
+        visible={isAccountSheetOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setIsAccountSheetOpen(false)}
+      >
+        <View style={styles.sheetOverlay}>
+          <View style={styles.sheetCard}>
+            <View style={styles.sheetHandle} />
+
+            <View style={styles.sheetTopRow}>
+              <Text style={styles.sheetHeaderTitle}>Account & Backup</Text>
+              <TouchableOpacity
+                onPress={() => setIsAccountSheetOpen(false)}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                <Text style={styles.sheetCloseBtn}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            {session ? (
+              // Authenticated View
+              <ScrollView showsVerticalScrollIndicator={false}>
+                <View style={styles.profileHero}>
+                  <View style={styles.profileAvatarLarge}>
+                    <Text style={styles.profileAvatarLetter}>
+                      {session.sub.slice(0, 1).toUpperCase() || 'U'}
+                    </Text>
+                  </View>
+                  <Text style={styles.profileUserEmail}>Private Cloud User</Text>
+                  <Text style={styles.profileSubId} numberOfLines={1}>
+                    ID: {session.sub}
                   </Text>
-                  <TouchableOpacity
-                    style={styles.signOutBtn}
-                    onPress={() => void handleSignOut()}
-                  >
-                    <Text style={styles.signOutBtnText}>Sign Out</Text>
-                  </TouchableOpacity>
                 </View>
-              ) : (
-                <View>
-                  <Text style={styles.localStatusText}>
-                    Sign in with AWS Cognito to obtain scoped STS credentials and upload directly to your S3 bucket.
-                  </Text>
 
-                  {authError ? <Text style={styles.errorText}>{authError}</Text> : null}
+                {/* Storage & Backup Card */}
+                <View style={styles.sheetInfoBox}>
+                  <View style={styles.sheetInfoRow}>
+                    <Text style={styles.sheetInfoLabel}>Cloud Status</Text>
+                    <Text style={styles.sheetInfoValueGreen}>✓ Connected</Text>
+                  </View>
+                  <View style={styles.sheetInfoRow}>
+                    <Text style={styles.sheetInfoLabel}>S3 Bucket</Text>
+                    <Text style={styles.sheetInfoValueMono} numberOfLines={1}>
+                      {PHOTO_ARCHIVE_AWS.bucket.slice(0, 22)}...
+                    </Text>
+                  </View>
+                  <View style={styles.sheetInfoRow}>
+                    <Text style={styles.sheetInfoLabel}>AWS Region</Text>
+                    <Text style={styles.sheetInfoValue}>{PHOTO_ARCHIVE_AWS.region}</Text>
+                  </View>
+                  <View style={styles.sheetInfoRow}>
+                    <Text style={styles.sheetInfoLabel}>Backed Up Items</Text>
+                    <Text style={styles.sheetInfoValue}>{backedUpIds.size} files</Text>
+                  </View>
+                </View>
 
+                {unbackedCount > 0 && (
                   <TouchableOpacity
-                    style={styles.signInBtn}
-                    onPress={() => void handleSignIn()}
-                    disabled={isSigningIn}
+                    style={styles.sheetBackupBtn}
+                    onPress={() => {
+                      setIsAccountSheetOpen(false);
+                      const unbacked = deviceAssets.filter((a) => !backedUpIds.has(a.id));
+                      void performUpload(unbacked.slice(0, 25));
+                    }}
                   >
-                    <Text style={styles.signInBtnText}>
-                      {isSigningIn ? 'Connecting to Cognito...' : 'Sign In with Cognito'}
+                    <Text style={styles.sheetBackupBtnText}>
+                      Back Up Remaining ({unbackedCount})
                     </Text>
                   </TouchableOpacity>
+                )}
+
+                {/* Prominent, unambiguous Sign Out button */}
+                <TouchableOpacity
+                  style={styles.sheetSignOutBtn}
+                  onPress={() => void handleSignOut()}
+                >
+                  <Text style={styles.sheetSignOutBtnText}>Sign Out of Photo Archive</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            ) : (
+              // Unauthenticated View
+              <View style={styles.unauthSheetContent}>
+                <View style={styles.unauthHeroIcon}>
+                  <Text style={styles.unauthHeroGlyph}>☁️</Text>
                 </View>
-              )}
-            </View>
-          </ScrollView>
-        )}
-      </View>
+                <Text style={styles.unauthTitle}>Private S3 Photo Archive</Text>
+                <Text style={styles.unauthSubtitle}>
+                  Sign in with AWS Cognito to back up original full-resolution photos directly to your private S3 bucket.
+                </Text>
 
-      {/* ── Bottom Navigation Tabs ─────────────────────────────────── */}
-      <View style={styles.bottomTabBar}>
-        <TouchableOpacity
-          style={[styles.tabButton, activeTab === 'photos' && styles.tabButtonActive]}
-          onPress={() => setActiveTab('photos')}
-        >
-          <Text style={styles.tabIcon}>📸</Text>
-          <Text
-            style={[styles.tabLabel, activeTab === 'photos' && styles.tabLabelActive]}
-          >
-            Photos
-          </Text>
-        </TouchableOpacity>
+                {authError ? <Text style={styles.sheetErrorText}>{authError}</Text> : null}
 
-        <TouchableOpacity
-          style={[styles.tabButton, activeTab === 'search' && styles.tabButtonActive]}
-          onPress={() => setActiveTab('search')}
-        >
-          <Text style={styles.tabIcon}>🔍</Text>
-          <Text
-            style={[styles.tabLabel, activeTab === 'search' && styles.tabLabelActive]}
-          >
-            Search
-          </Text>
-        </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.sheetSignInBtn}
+                  onPress={() => void handleSignIn()}
+                  disabled={isSigningIn}
+                >
+                  {isSigningIn ? (
+                    <ActivityIndicator color="#000000" />
+                  ) : (
+                    <Text style={styles.sheetSignInBtnText}>Sign In with Cognito</Text>
+                  )}
+                </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.tabButton, activeTab === 'reclaim' && styles.tabButtonActive]}
-          onPress={() => setActiveTab('reclaim')}
-        >
-          <Text style={styles.tabIcon}>🛡️</Text>
-          <Text
-            style={[styles.tabLabel, activeTab === 'reclaim' && styles.tabLabelActive]}
-          >
-            Reclaim
-          </Text>
-        </TouchableOpacity>
+                <View style={styles.sheetConfigBox}>
+                  <Text style={styles.sheetConfigTitle}>DEPLOYED CONFIGURATION</Text>
+                  <Text style={styles.sheetConfigItem}>Region: {PHOTO_ARCHIVE_AWS.region}</Text>
+                  <Text style={styles.sheetConfigItem}>User Pool: {PHOTO_ARCHIVE_AWS.userPoolId}</Text>
+                </View>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
 
-        <TouchableOpacity
-          style={[styles.tabButton, activeTab === 'cloud' && styles.tabButtonActive]}
-          onPress={() => setActiveTab('cloud')}
-        >
-          <Text style={styles.tabIcon}>☁️</Text>
-          <Text
-            style={[styles.tabLabel, activeTab === 'cloud' && styles.tabLabelActive]}
-          >
-            AWS S3
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* ── AWS Upload Real-Time Modal ──────────────────────────────── */}
-      {uploadModal && (
+      {/* ── Native Minimalist Upload Modal ────────────────────────── */}
+      {uploadTask && (
         <Modal visible transparent animationType="fade">
           <View style={styles.uploadModalOverlay}>
-            <View style={styles.uploadModalCard}>
-              <Text style={styles.uploadModalTitle}>
-                {uploadModal.isComplete
-                  ? 'S3 Backup Complete'
-                  : uploadModal.error
-                  ? 'S3 Upload Error'
-                  : 'Uploading to Amazon S3'}
-              </Text>
-              <Text style={styles.uploadModalTarget}>
-                s3://{PHOTO_ARCHIVE_AWS.bucket}
+            <View style={styles.uploadModalWindow}>
+              <Text style={styles.uploadModalHeader}>
+                {uploadTask.isComplete
+                  ? 'Backup Complete'
+                  : uploadTask.error
+                  ? 'Upload Interrupted'
+                  : 'Backing Up to S3'}
               </Text>
 
-              {uploadModal.error ? (
-                <View style={styles.uploadErrorSection}>
-                  <Text style={styles.uploadErrorIcon}>✕</Text>
-                  <Text style={styles.uploadErrorTitle}>Upload Failed</Text>
-                  <Text style={styles.uploadErrorDesc}>{uploadModal.error}</Text>
+              {uploadTask.error ? (
+                <View style={styles.uploadErrorWrapper}>
+                  <Text style={styles.uploadErrorBadge}>✕</Text>
+                  <Text style={styles.uploadErrorMessage}>{uploadTask.error}</Text>
                   <TouchableOpacity
-                    style={styles.uploadDoneBtn}
-                    onPress={() => setUploadModal(null)}
+                    style={styles.uploadDismissBtn}
+                    onPress={() => setUploadTask(null)}
                   >
-                    <Text style={styles.uploadDoneBtnText}>Dismiss</Text>
+                    <Text style={styles.uploadDismissBtnText}>Dismiss</Text>
                   </TouchableOpacity>
                 </View>
-              ) : uploadModal.isUploading ? (
-                <View style={styles.uploadProgressSection}>
-                  <ActivityIndicator size="small" color="#9acd7c" />
-                  <Text style={styles.uploadModalFile} numberOfLines={1}>
-                    Item {uploadModal.current} of {uploadModal.total}:{' '}
-                    {uploadModal.currentFilename}
+              ) : uploadTask.isUploading ? (
+                <View style={styles.uploadActiveWrapper}>
+                  <ActivityIndicator size="small" color="#0a84ff" style={styles.uploadSpinner} />
+                  <Text style={styles.uploadFileLabel} numberOfLines={1}>
+                    {uploadTask.current} of {uploadTask.total}: {uploadTask.currentFilename}
                   </Text>
-                  <Text style={styles.uploadModalStatusText}>
-                    {uploadModal.statusText}
-                  </Text>
-                  {uploadModal.currentHash ? (
-                    <Text style={styles.uploadModalHash} numberOfLines={1}>
-                      SHA-256: {uploadModal.currentHash.slice(0, 32)}...
-                    </Text>
-                  ) : null}
-                  <View style={styles.progressBarBg}>
+                  <Text style={styles.uploadSubLabel}>{uploadTask.statusText}</Text>
+                  <View style={styles.progressBarTrack}>
                     <View
                       style={[
                         styles.progressBarFill,
                         {
                           width: `${Math.round(
-                            (uploadModal.current / uploadModal.total) * 100,
+                            (uploadTask.current / uploadTask.total) * 100,
                           )}%`,
                         },
                       ]}
                     />
                   </View>
-                  <Text style={styles.uploadPercent}>
-                    {Math.round((uploadModal.current / uploadModal.total) * 100)}%
-                  </Text>
                 </View>
               ) : (
-                <View style={styles.uploadCompleteSection}>
-                  <Text style={styles.uploadSuccessIcon}>✓</Text>
-                  <Text style={styles.uploadSuccessText}>
-                    {uploadModal.successfulUploads.length} original files uploaded and verified in Amazon S3 ({PHOTO_ARCHIVE_AWS.region}).
-                  </Text>
-                  <Text style={styles.uploadSuccessSub}>
-                    SQLite ledger updated with SHA-256 content addresses.
+                <View style={styles.uploadDoneWrapper}>
+                  <Text style={styles.uploadDoneGlyph}>✓</Text>
+                  <Text style={styles.uploadDoneSummary}>
+                    {uploadTask.total} items securely archived and indexed.
                   </Text>
                   <TouchableOpacity
-                    style={styles.uploadDoneBtn}
-                    onPress={() => setUploadModal(null)}
+                    style={styles.uploadDismissBtn}
+                    onPress={() => setUploadTask(null)}
                   >
-                    <Text style={styles.uploadDoneBtnText}>Done</Text>
+                    <Text style={styles.uploadDismissBtnText}>Done</Text>
                   </TouchableOpacity>
                 </View>
               )}
@@ -695,7 +730,7 @@ function AppShell(): React.ReactElement {
 export default function App(): React.ReactElement {
   return (
     <SQLiteProvider databaseName="photo-archive.db" useSuspense>
-      <Suspense fallback={<View style={styles.fallbackContainer} />}>
+      <Suspense fallback={<View style={styles.appContainer} />}>
         <AppShell />
       </Suspense>
     </SQLiteProvider>
@@ -703,504 +738,606 @@ export default function App(): React.ReactElement {
 }
 
 const styles = StyleSheet.create({
-  mainContainer: {
+  appContainer: {
     flex: 1,
-    backgroundColor: '#0c0d0b',
+    backgroundColor: '#000000',
   },
-  fallbackContainer: {
-    flex: 1,
-    backgroundColor: '#0c0d0b',
-  },
-  headerBar: {
+  // ── Top Header ─────────────────────────────────────────────
+  topHeader: {
     paddingTop: 54,
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    backgroundColor: '#121310',
-    borderBottomWidth: 1,
-    borderBottomColor: '#20221c',
+    paddingHorizontal: 18,
+    paddingBottom: 10,
+    backgroundColor: '#000000',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#2c2c2e',
+  },
+  standardHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  headerLeft: {
-    flex: 1,
-  },
-  appTitle: {
-    color: '#f2f4ec',
-    fontSize: 18,
+  navLargeTitle: {
+    color: '#ffffff',
+    fontSize: 26,
     fontWeight: '700',
-    letterSpacing: -0.3,
+    letterSpacing: -0.4,
   },
-  statusRow: {
+  syncStatusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 2,
+    marginTop: 3,
   },
-  statusDot: {
+  syncStatusDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
     marginRight: 6,
   },
-  statusSubtitle: {
-    color: '#8e968b',
-    fontSize: 11,
-    fontFamily: 'monospace',
+  syncStatusLabel: {
+    color: '#8e8e93',
+    fontSize: 12,
   },
-  headerActions: {
+  headerRightActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 12,
   },
-  iconButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
-    backgroundColor: '#1b1d18',
-    borderWidth: 1,
-    borderColor: '#2b2e26',
+  headerIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#1c1c1e',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconButtonActive: {
-    backgroundColor: '#2e3328',
-    borderColor: '#9acd7c',
+  headerIconGlyph: {
+    fontSize: 15,
   },
-  iconButtonText: {
-    fontSize: 14,
-  },
-  backupActionButton: {
-    backgroundColor: '#9acd7c',
+  selectTextBtn: {
     paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 8,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: '#1c1c1e',
   },
-  backupActionButtonText: {
-    color: '#0c0d0b',
-    fontSize: 12,
+  selectTextBtnLabel: {
+    color: '#0a84ff',
+    fontSize: 14,
     fontWeight: '600',
   },
-  searchBarContainer: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: '#151613',
-    borderBottomWidth: 1,
-    borderBottomColor: '#242720',
-    flexDirection: 'row',
+  avatarButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#0a84ff',
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  searchInput: {
-    flex: 1,
-    backgroundColor: '#1c1e19',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    color: '#f2f4ec',
-    fontSize: 13,
-    borderWidth: 1,
-    borderColor: '#2f332a',
-  },
-  searchClearBtn: {
-    paddingHorizontal: 10,
-  },
-  searchClearText: {
-    color: '#8e968b',
+  avatarInitial: {
+    color: '#ffffff',
     fontSize: 14,
+    fontWeight: '700',
   },
-  selectionRibbon: {
-    backgroundColor: '#1b1d18',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#2f332a',
+  // Selection Header
+  selectionHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    height: 40,
   },
-  selectionCountText: {
-    color: '#9acd7c',
-    fontSize: 12,
+  headerActionText: {
+    color: '#0a84ff',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  selectionTitle: {
+    color: '#ffffff',
+    fontSize: 16,
     fontWeight: '600',
   },
-  selectionBtnGroup: {
+  // Search Bar
+  searchBarWrapper: {
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+    backgroundColor: '#1c1c1e',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
   },
-  ribbonBtn: {
+  searchTextInput: {
+    flex: 1,
+    backgroundColor: '#2c2c2e',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    color: '#ffffff',
+    fontSize: 14,
+  },
+  searchClearBtn: {
     paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: '#262922',
   },
-  ribbonBtnText: {
-    color: '#c2cac0',
-    fontSize: 11,
+  searchClearGlyph: {
+    color: '#8e8e93',
+    fontSize: 14,
   },
-  ribbonUploadBtn: {
-    backgroundColor: '#9acd7c',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  ribbonUploadBtnText: {
-    color: '#0c0d0b',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  btnDisabled: {
-    opacity: 0.4,
-  },
-  tabContentContainer: {
+  // Canvas
+  tabCanvas: {
     flex: 1,
     paddingHorizontal: 16,
     paddingTop: 12,
   },
-  searchTabContainer: {
+  searchTabBody: {
     flex: 1,
     gap: 12,
   },
-  filterChipRow: {
+  pillsRow: {
     flexDirection: 'row',
     gap: 8,
   },
-  filterChip: {
-    paddingHorizontal: 12,
+  pill: {
+    paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 16,
-    backgroundColor: '#1a1c17',
-    borderWidth: 1,
-    borderColor: '#2b2e25',
+    backgroundColor: '#1c1c1e',
   },
-  filterChipActive: {
-    backgroundColor: '#273022',
-    borderColor: '#9acd7c',
+  pillActive: {
+    backgroundColor: '#0a84ff',
   },
-  filterChipText: {
-    color: '#8e968b',
-    fontSize: 12,
+  pillText: {
+    color: '#8e8e93',
+    fontSize: 13,
   },
-  filterChipTextActive: {
-    color: '#9acd7c',
-    fontSize: 12,
+  pillTextActive: {
+    color: '#ffffff',
     fontWeight: '600',
   },
-  reclaimContainer: {
+  // Storage Tab
+  storageScroll: {
     flex: 1,
   },
-  reclaimCard: {
-    backgroundColor: '#141612',
-    borderRadius: 12,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: '#262a22',
+  storageCard: {
+    backgroundColor: '#1c1c1e',
+    borderRadius: 14,
+    padding: 20,
     marginBottom: 16,
   },
-  reclaimCardEyebrow: {
-    color: '#9acd7c',
-    fontSize: 10,
-    letterSpacing: 1.5,
+  storageCardCategory: {
+    color: '#0a84ff',
+    fontSize: 11,
     fontWeight: '700',
-    fontFamily: 'monospace',
+    letterSpacing: 1.2,
   },
-  reclaimCardTitle: {
-    color: '#f2f4ec',
-    fontSize: 24,
+  storageCardHighlight: {
+    color: '#ffffff',
+    fontSize: 28,
     fontWeight: '700',
-    marginTop: 6,
+    marginTop: 4,
   },
-  reclaimCardDesc: {
-    color: '#8e968b',
+  storageCardSubtitle: {
+    color: '#8e8e93',
     fontSize: 13,
-    marginTop: 8,
-    lineHeight: 18,
+    marginTop: 2,
   },
-  purgeButton: {
+  storageCardBody: {
+    color: '#d1d1d6',
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 10,
+  },
+  purgeActionBtn: {
     marginTop: 16,
-    backgroundColor: '#ef4444',
+    backgroundColor: '#ff453a',
     paddingVertical: 12,
-    borderRadius: 8,
+    borderRadius: 10,
     alignItems: 'center',
   },
-  purgeButtonText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
+  purgeActionBtnDisabled: {
+    backgroundColor: '#2c2c2e',
+    opacity: 0.5,
   },
-  reclaimStatsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 20,
-  },
-  statBox: {
-    flex: 1,
-    backgroundColor: '#141612',
-    padding: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#262a22',
-  },
-  statBoxNum: {
-    color: '#f2f4ec',
-    fontSize: 16,
-    fontWeight: '700',
-    fontFamily: 'monospace',
-  },
-  statBoxLabel: {
-    color: '#8e968b',
-    fontSize: 10,
-    marginTop: 4,
-    textTransform: 'uppercase',
-  },
-  reclaimSectionTitle: {
-    color: '#f2f4ec',
+  purgeActionBtnText: {
+    color: '#ffffff',
     fontSize: 14,
     fontWeight: '600',
-    marginBottom: 8,
   },
-  guaranteeBox: {
-    backgroundColor: '#141612',
+  metricsGrid: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 20,
+  },
+  metricItem: {
+    flex: 1,
+    backgroundColor: '#1c1c1e',
     padding: 14,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#262a22',
+    borderRadius: 12,
+  },
+  metricNum: {
+    color: '#ffffff',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  metricLabel: {
+    color: '#8e8e93',
+    fontSize: 11,
+    marginTop: 4,
+  },
+  guaranteeCard: {
+    backgroundColor: '#1c1c1e',
+    borderRadius: 14,
+    padding: 16,
     gap: 8,
   },
+  guaranteeTitle: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
   guaranteeItem: {
-    color: '#a3ad9f',
+    color: '#8e8e93',
     fontSize: 12,
   },
-  cloudContainer: {
-    flex: 1,
-  },
-  cloudCard: {
-    backgroundColor: '#141612',
-    padding: 18,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#262a22',
-  },
-  cloudTitle: {
-    color: '#f2f4ec',
-    fontSize: 20,
-    fontWeight: '700',
-    marginTop: 4,
-  },
-  cloudBucketName: {
-    color: '#9acd7c',
-    fontSize: 12,
-    fontFamily: 'monospace',
-    marginTop: 8,
-  },
-  cloudRegion: {
-    color: '#8e968b',
-    fontSize: 12,
-    fontFamily: 'monospace',
-    marginTop: 2,
-  },
-  cloudUserpool: {
-    color: '#8e968b',
-    fontSize: 12,
-    fontFamily: 'monospace',
-    marginTop: 2,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#262a22',
-    marginVertical: 16,
-  },
-  sessionStatus: {
-    color: '#9acd7c',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  subText: {
-    color: '#8e968b',
-    fontSize: 11,
-    fontFamily: 'monospace',
-    marginTop: 4,
-  },
-  signOutBtn: {
-    marginTop: 14,
-    backgroundColor: '#262a22',
+  // Floating Action Bar (Selection)
+  floatingActionBar: {
+    position: 'absolute',
+    bottom: 24,
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(28, 28, 30, 0.95)',
+    borderRadius: 16,
+    paddingHorizontal: 16,
     paddingVertical: 10,
-    borderRadius: 8,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#38383a',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 8,
   },
-  signOutBtnText: {
-    color: '#f2f4ec',
-    fontSize: 12,
-    fontWeight: '500',
+  floatingSecondaryBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
-  localStatusText: {
-    color: '#8e968b',
-    fontSize: 13,
-    lineHeight: 18,
+  floatingSecondaryText: {
+    color: '#8e8e93',
+    fontSize: 14,
   },
-  errorText: {
-    color: '#ef4444',
-    fontSize: 12,
-    marginTop: 8,
+  disabledText: {
+    opacity: 0.4,
   },
-  signInBtn: {
-    marginTop: 14,
-    backgroundColor: '#9acd7c',
-    paddingVertical: 11,
-    borderRadius: 8,
-    alignItems: 'center',
+  floatingPrimaryBtn: {
+    backgroundColor: '#0a84ff',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 12,
   },
-  signInBtnText: {
-    color: '#0c0d0b',
-    fontSize: 13,
+  floatingPrimaryBtnDisabled: {
+    opacity: 0.4,
+  },
+  floatingPrimaryText: {
+    color: '#ffffff',
+    fontSize: 14,
     fontWeight: '600',
   },
-  bottomTabBar: {
-    height: 64,
-    backgroundColor: '#121310',
-    borderTopWidth: 1,
-    borderTopColor: '#20221c',
+  // Bottom Navigation
+  bottomNavigation: {
+    height: 60,
+    backgroundColor: '#000000',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#2c2c2e',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    paddingBottom: 8,
+    paddingBottom: 6,
   },
-  tabButton: {
+  tabItem: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 6,
-    paddingHorizontal: 12,
+    paddingHorizontal: 16,
   },
-  tabButtonActive: {},
-  tabIcon: {
+  tabGlyph: {
     fontSize: 18,
   },
-  tabLabel: {
-    color: '#6e756b',
+  tabTitle: {
+    color: '#8e8e93',
     fontSize: 10,
     marginTop: 2,
     fontWeight: '500',
   },
-  tabLabelActive: {
-    color: '#9acd7c',
+  tabTitleActive: {
+    color: '#0a84ff',
+    fontWeight: '600',
+  },
+  // Account Sheet Modal
+  sheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'flex-end',
+  },
+  sheetCard: {
+    backgroundColor: '#1c1c1e',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingBottom: 36,
+    maxHeight: '85%',
+  },
+  sheetHandle: {
+    width: 36,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: '#48484a',
+    alignSelf: 'center',
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  sheetTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  sheetHeaderTitle: {
+    color: '#ffffff',
+    fontSize: 18,
     fontWeight: '700',
   },
+  sheetCloseBtn: {
+    color: '#8e8e93',
+    fontSize: 16,
+    padding: 4,
+  },
+  profileHero: {
+    alignItems: 'center',
+    marginVertical: 12,
+  },
+  profileAvatarLarge: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#0a84ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileAvatarLetter: {
+    color: '#ffffff',
+    fontSize: 24,
+    fontWeight: '700',
+  },
+  profileUserEmail: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
+    marginTop: 8,
+  },
+  profileSubId: {
+    color: '#8e8e93',
+    fontSize: 11,
+    marginTop: 2,
+    maxWidth: 240,
+  },
+  sheetInfoBox: {
+    backgroundColor: '#2c2c2e',
+    borderRadius: 14,
+    padding: 14,
+    marginVertical: 14,
+    gap: 10,
+  },
+  sheetInfoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  sheetInfoLabel: {
+    color: '#8e8e93',
+    fontSize: 13,
+  },
+  sheetInfoValue: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  sheetInfoValueGreen: {
+    color: '#34c759',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  sheetInfoValueMono: {
+    color: '#8e8e93',
+    fontSize: 11,
+    fontFamily: 'monospace',
+    maxWidth: 160,
+  },
+  sheetBackupBtn: {
+    backgroundColor: '#0a84ff',
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  sheetBackupBtnText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  sheetSignOutBtn: {
+    backgroundColor: 'rgba(255, 69, 58, 0.12)',
+    borderWidth: 1,
+    borderColor: '#ff453a',
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 6,
+    marginBottom: 20,
+  },
+  sheetSignOutBtnText: {
+    color: '#ff453a',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  // Unauth Sheet View
+  unauthSheetContent: {
+    alignItems: 'center',
+    paddingVertical: 16,
+  },
+  unauthHeroIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#2c2c2e',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  unauthHeroGlyph: {
+    fontSize: 26,
+  },
+  unauthTitle: {
+    color: '#ffffff',
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  unauthSubtitle: {
+    color: '#8e8e93',
+    fontSize: 13,
+    textAlign: 'center',
+    marginTop: 6,
+    lineHeight: 18,
+    paddingHorizontal: 12,
+  },
+  sheetErrorText: {
+    color: '#ff453a',
+    fontSize: 12,
+    marginTop: 10,
+  },
+  sheetSignInBtn: {
+    backgroundColor: '#ffffff',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    marginTop: 20,
+    width: '100%',
+    alignItems: 'center',
+  },
+  sheetSignInBtnText: {
+    color: '#000000',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  sheetConfigBox: {
+    marginTop: 20,
+    backgroundColor: '#2c2c2e',
+    padding: 12,
+    borderRadius: 10,
+    width: '100%',
+    gap: 4,
+  },
+  sheetConfigTitle: {
+    color: '#8e8e93',
+    fontSize: 10,
+    letterSpacing: 1,
+    fontWeight: '700',
+  },
+  sheetConfigItem: {
+    color: '#d1d1d6',
+    fontSize: 12,
+    fontFamily: 'monospace',
+  },
+  // Native Upload Modal
   uploadModalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.85)',
+    backgroundColor: 'rgba(0,0,0,0.7)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
   },
-  uploadModalCard: {
+  uploadModalWindow: {
     width: '100%',
-    backgroundColor: '#141612',
-    borderRadius: 14,
+    maxWidth: 320,
+    backgroundColor: '#1c1c1e',
+    borderRadius: 16,
     padding: 20,
-    borderWidth: 1,
-    borderColor: '#2b2f25',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
   },
-  uploadModalTitle: {
-    color: '#f2f4ec',
-    fontSize: 17,
+  uploadModalHeader: {
+    color: '#ffffff',
+    fontSize: 16,
     fontWeight: '700',
   },
-  uploadModalTarget: {
-    color: '#8e968b',
-    fontSize: 11,
-    fontFamily: 'monospace',
-    marginTop: 4,
-  },
-  uploadProgressSection: {
-    marginTop: 20,
-    alignItems: 'center',
-  },
-  uploadModalFile: {
-    color: '#dbe2d8',
-    fontSize: 13,
-    marginTop: 12,
-  },
-  uploadModalStatusText: {
-    color: '#9acd7c',
-    fontSize: 12,
-    marginTop: 6,
-  },
-  uploadModalHash: {
-    color: '#8e968b',
-    fontSize: 10,
-    fontFamily: 'monospace',
-    marginTop: 4,
-  },
-  progressBarBg: {
+  uploadActiveWrapper: {
     width: '100%',
-    height: 6,
-    backgroundColor: '#242820',
-    borderRadius: 3,
+    alignItems: 'center',
     marginTop: 16,
+  },
+  uploadSpinner: {
+    marginBottom: 10,
+  },
+  uploadFileLabel: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  uploadSubLabel: {
+    color: '#8e8e93',
+    fontSize: 11,
+    marginTop: 4,
+  },
+  progressBarTrack: {
+    width: '100%',
+    height: 4,
+    backgroundColor: '#2c2c2e',
+    borderRadius: 2,
+    marginTop: 14,
     overflow: 'hidden',
   },
   progressBarFill: {
     height: '100%',
-    backgroundColor: '#9acd7c',
+    backgroundColor: '#0a84ff',
   },
-  uploadPercent: {
-    color: '#9acd7c',
-    fontSize: 12,
-    fontFamily: 'monospace',
-    marginTop: 8,
-  },
-  uploadCompleteSection: {
-    marginTop: 20,
+  uploadDoneWrapper: {
     alignItems: 'center',
+    marginTop: 14,
   },
-  uploadSuccessIcon: {
-    fontSize: 32,
-    color: '#9acd7c',
+  uploadDoneGlyph: {
+    fontSize: 28,
+    color: '#34c759',
   },
-  uploadSuccessText: {
-    color: '#dbe2d8',
+  uploadDoneSummary: {
+    color: '#ffffff',
     fontSize: 13,
     textAlign: 'center',
-    marginTop: 10,
-    lineHeight: 18,
-  },
-  uploadSuccessSub: {
-    color: '#8e968b',
-    fontSize: 11,
-    textAlign: 'center',
-    marginTop: 6,
-    fontFamily: 'monospace',
-  },
-  uploadErrorSection: {
-    marginTop: 20,
-    alignItems: 'center',
-  },
-  uploadErrorIcon: {
-    fontSize: 32,
-    color: '#ef4444',
-  },
-  uploadErrorTitle: {
-    color: '#ef4444',
-    fontSize: 15,
-    fontWeight: '700',
-    marginTop: 6,
-  },
-  uploadErrorDesc: {
-    color: '#dbe2d8',
-    fontSize: 12,
-    textAlign: 'center',
     marginTop: 8,
-    lineHeight: 16,
   },
-  uploadDoneBtn: {
-    marginTop: 18,
-    backgroundColor: '#9acd7c',
-    paddingHorizontal: 28,
-    paddingVertical: 10,
-    borderRadius: 8,
+  uploadDismissBtn: {
+    marginTop: 16,
+    backgroundColor: '#2c2c2e',
+    paddingVertical: 8,
+    paddingHorizontal: 22,
+    borderRadius: 10,
   },
-  uploadDoneBtnText: {
-    color: '#0c0d0b',
+  uploadDismissBtnText: {
+    color: '#ffffff',
     fontSize: 13,
     fontWeight: '600',
+  },
+  uploadErrorWrapper: {
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  uploadErrorBadge: {
+    fontSize: 24,
+    color: '#ff453a',
+  },
+  uploadErrorMessage: {
+    color: '#d1d1d6',
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 6,
   },
 });
