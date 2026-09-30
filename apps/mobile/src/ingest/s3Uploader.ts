@@ -19,6 +19,7 @@ import { origKey } from '@photo-archive/core';
 import type { DevicePhoto } from '../browse/DevicePhotoGrid.tsx';
 import type { CredentialProvider } from '../credentials/credentialProvider.ts';
 import { presignS3PutUrl } from '../browse/mediaUrlProvider.ts';
+import { sha256Hex } from '../crypto/pureCrypto.ts';
 import { PHOTO_ARCHIVE_AWS } from '../config/aws.ts';
 
 export interface UploadResult {
@@ -96,17 +97,6 @@ async function readAssetBytes(asset: DevicePhoto): Promise<{ bytes: Uint8Array; 
 }
 
 /**
- * Computes lowercase 64-hex SHA-256 content address of a byte buffer.
- */
-async function computeContentHash(bytes: Uint8Array): Promise<string> {
-  // Use crypto.subtle.digest (standard in React Native / Expo with modern engines)
-  const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
-  return Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-/**
  * Uploads a single device asset directly to AWS S3 and records it in SQLite.
  */
 export async function uploadAssetToS3(
@@ -123,8 +113,8 @@ export async function uploadAssetToS3(
 
   onProgress?.({ status: 'hashing', progressPercent: 30, totalBytes: byteSize });
 
-  // 2. Compute authentic SHA-256
-  const hash = await computeContentHash(bytes);
+  // 2. Compute authentic SHA-256 using pure JavaScript FIPS 180-4 (Hermes safe)
+  const hash = sha256Hex(bytes);
 
   onProgress?.({ status: 'signing', progressPercent: 45, hash, totalBytes: byteSize });
 

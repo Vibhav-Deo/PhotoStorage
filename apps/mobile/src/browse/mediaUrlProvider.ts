@@ -12,6 +12,11 @@
 
 import { thumbKey, previewKey, origKey, videoKey } from '@photo-archive/core';
 import type { AwsCredentials } from '../credentials/credentialProvider.ts';
+import {
+  sha256Hex,
+  hmacSha256Hex,
+  deriveSigV4SigningKey,
+} from '../crypto/pureCrypto.ts';
 
 export interface MediaUrlProvider {
   urlsFor(keys: string[]): Promise<Map<string, string>>;
@@ -29,9 +34,9 @@ export { thumbKey, previewKey, origKey, videoKey };
 
 /**
  * Generates a pre-signed S3 GET URL using SigV4 query-string signing.
- * All signing is local — no network calls.
+ * All signing is local — pure JavaScript, no native crypto dependency.
  */
-async function presignS3Url(
+export async function presignS3Url(
   key: string,
   credentials: AwsCredentials,
   config: S3DirectUrlProviderConfig,
@@ -66,52 +71,14 @@ async function presignS3Url(
     'UNSIGNED-PAYLOAD',
   ].join('\n');
 
-  const encoder = new TextEncoder();
-  const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(canonicalRequest));
-  const canonicalHash = Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-
+  const canonicalHash = sha256Hex(canonicalRequest);
   const stringToSign = ['AWS4-HMAC-SHA256', amzdate, credentialScope, canonicalHash].join('\n');
 
-  // Derive the signing key: HMAC-SHA256 chain.
-  const signingKey = await deriveSigningKey(credentials.secretAccessKey, datestamp, region);
-  const signatureBuffer = await crypto.subtle.sign(
-    'HMAC',
-    signingKey,
-    encoder.encode(stringToSign),
-  );
-  const signature = Array.from(new Uint8Array(signatureBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
+  // Derive signing key using pure JS HMAC-SHA256 chain
+  const signingKey = deriveSigV4SigningKey(credentials.secretAccessKey, datestamp, region);
+  const signature = hmacSha256Hex(signingKey, stringToSign);
 
   return `https://${host}/${encodedKey}?${queryParams.toString()}&X-Amz-Signature=${signature}`;
-}
-
-async function hmacSha256(key: CryptoKey | BufferSource, data: string): Promise<ArrayBuffer> {
-  const encoder = new TextEncoder();
-  const cryptoKey =
-    key instanceof CryptoKey
-      ? key
-      : await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, [
-          'sign',
-        ]);
-  return crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(data));
-}
-
-async function deriveSigningKey(
-  secretKey: string,
-  datestamp: string,
-  region: string,
-): Promise<CryptoKey> {
-  const encoder = new TextEncoder();
-  const kDate = await hmacSha256(encoder.encode(`AWS4${secretKey}`), datestamp);
-  const kRegion = await hmacSha256(kDate, region);
-  const kService = await hmacSha256(kRegion, 's3');
-  const kSigning = await hmacSha256(kService, 'aws4_request');
-  return crypto.subtle.importKey('raw', kSigning, { name: 'HMAC', hash: 'SHA-256' }, false, [
-    'sign',
-  ]);
 }
 
 /**
@@ -152,23 +119,11 @@ export async function presignS3PutUrl(
     'UNSIGNED-PAYLOAD',
   ].join('\n');
 
-  const encoder = new TextEncoder();
-  const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(canonicalRequest));
-  const canonicalHash = Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-
+  const canonicalHash = sha256Hex(canonicalRequest);
   const stringToSign = ['AWS4-HMAC-SHA256', amzdate, credentialScope, canonicalHash].join('\n');
 
-  const signingKey = await deriveSigningKey(credentials.secretAccessKey, datestamp, region);
-  const signatureBuffer = await crypto.subtle.sign(
-    'HMAC',
-    signingKey,
-    encoder.encode(stringToSign),
-  );
-  const signature = Array.from(new Uint8Array(signatureBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
+  const signingKey = deriveSigV4SigningKey(credentials.secretAccessKey, datestamp, region);
+  const signature = hmacSha256Hex(signingKey, stringToSign);
 
   return `https://${host}/${encodedKey}?${queryParams.toString()}&X-Amz-Signature=${signature}`;
 }
