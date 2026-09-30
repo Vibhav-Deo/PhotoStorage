@@ -1,6 +1,6 @@
 import * as MediaLibrary from 'expo-media-library/legacy';
 import { Image } from 'expo-image';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
@@ -129,13 +129,66 @@ export function DevicePhotoGrid({
     void checkAndLoadPhotos();
   }, [checkAndLoadPhotos]);
 
-  const filteredAssets = searchQuery.trim()
-    ? assets.filter(
-        (a) =>
-          a.filename?.toLowerCase().includes(searchQuery.toLowerCase().trim()) ||
-          a.mediaType?.toLowerCase().includes(searchQuery.toLowerCase().trim()),
-      )
-    : assets;
+  const filteredAssets = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return assets;
+
+    const terms = q.split(/\s+/).filter(Boolean);
+
+    return assets.filter((asset) => {
+      const filename = (asset.filename ?? '').toLowerCase();
+      const isVideo =
+        asset.mediaType === 'video' ||
+        filename.endsWith('.mp4') ||
+        filename.endsWith('.mov');
+      const isPhoto = asset.mediaType === 'photo' || !isVideo;
+      const ext = filename.split('.').pop() ?? '';
+
+      // Date / Month / Year
+      let dateString = '';
+      if (asset.creationTime) {
+        const d = new Date(asset.creationTime);
+        const year = String(d.getFullYear());
+        const monthLong = d.toLocaleString('default', { month: 'long' }).toLowerCase();
+        const monthShort = d.toLocaleString('default', { month: 'short' }).toLowerCase();
+        const day = String(d.getDate());
+        dateString = `${year} ${monthLong} ${monthShort} ${day} ${d.toLocaleDateString()}`.toLowerCase();
+      }
+
+      const isBackedUp = backedUpIds.has(asset.id);
+      const cloudStatus = isBackedUp
+        ? 'backed up cloud s3 synced archive'
+        : 'local device pending unbacked';
+
+      return terms.every((term) => {
+        if (term === 'photo' || term === 'photos' || term === 'image' || term === 'images') {
+          return isPhoto;
+        }
+        if (
+          term === 'video' ||
+          term === 'videos' ||
+          term === 'movie' ||
+          term === 'movies' ||
+          term === 'clip'
+        ) {
+          return isVideo;
+        }
+        if (term === 'cloud' || term === 'backed' || term === 'synced' || term === 's3' || term === 'archived') {
+          return isBackedUp;
+        }
+        if (term === 'local' || term === 'device' || term === 'unbacked' || term === 'pending') {
+          return !isBackedUp;
+        }
+
+        return (
+          filename.includes(term) ||
+          ext.includes(term) ||
+          dateString.includes(term) ||
+          cloudStatus.includes(term)
+        );
+      });
+    });
+  }, [assets, searchQuery, backedUpIds]);
 
   if (isLoading) {
     return (

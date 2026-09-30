@@ -311,12 +311,7 @@ function AppShell(): React.ReactElement {
             <View style={styles.headerRightActions}>
               <TouchableOpacity
                 style={styles.headerIconBtn}
-                onPress={() => {
-                  setIsSearchOpen((prev) => !prev);
-                  if (activeTab !== 'library' && activeTab !== 'search') {
-                    setActiveTab('library');
-                  }
-                }}
+                onPress={() => setActiveTab('search')}
               >
                 <Text style={styles.headerIconGlyph}>🔍</Text>
               </TouchableOpacity>
@@ -344,30 +339,10 @@ function AppShell(): React.ReactElement {
         )}
       </View>
 
-      {/* ── Search Bar Dropdown ──────────────────────────────────── */}
-      {isSearchOpen && (
-        <View style={styles.searchBarWrapper}>
-          <TextInput
-            style={styles.searchTextInput}
-            placeholder="Search by name, date, or format..."
-            placeholderTextColor="#8e8e93"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            autoFocus
-          />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.searchClearBtn}>
-              <Text style={styles.searchClearGlyph}>✕</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
-
       {/* ── Main Tab Content ──────────────────────────────────────── */}
       <View style={styles.tabCanvas}>
         {activeTab === 'library' && (
           <DevicePhotoGrid
-            searchQuery={searchQuery}
             isSelectMode={isSelectMode}
             selectedIds={selectedIds}
             onToggleSelect={toggleSelectAsset}
@@ -378,13 +353,31 @@ function AppShell(): React.ReactElement {
 
         {activeTab === 'search' && (
           <View style={styles.searchTabBody}>
-            <TextInput
-              style={styles.searchTextInput}
-              placeholder="Search library..."
-              placeholderTextColor="#8e8e93"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-            />
+            {/* Native iOS-style compact search bar */}
+            <View style={styles.nativeSearchBar}>
+              <Text style={styles.searchLeadingIcon}>🔍</Text>
+              <TextInput
+                style={styles.nativeSearchInput}
+                placeholder="Search photos, videos, dates, cloud..."
+                placeholderTextColor="#8e8e93"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                autoFocus
+                autoCorrect={false}
+              />
+              {searchQuery.length > 0 && (
+                <TouchableOpacity
+                  onPress={() => setSearchQuery('')}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <View style={styles.searchClearCircle}>
+                    <Text style={styles.searchClearIcon}>✕</Text>
+                  </View>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Clean category pills */}
             <View style={styles.pillsRow}>
               <TouchableOpacity
                 style={[styles.pill, searchQuery === '' && styles.pillActive]}
@@ -395,22 +388,39 @@ function AppShell(): React.ReactElement {
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.pill, searchQuery === 'jpg' && styles.pillActive]}
-                onPress={() => setSearchQuery('jpg')}
+                style={[styles.pill, searchQuery === 'photos' && styles.pillActive]}
+                onPress={() => setSearchQuery('photos')}
               >
-                <Text style={[styles.pillText, searchQuery === 'jpg' && styles.pillTextActive]}>
+                <Text style={[styles.pillText, searchQuery === 'photos' && styles.pillTextActive]}>
                   Photos
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.pill, searchQuery === 'video' && styles.pillActive]}
-                onPress={() => setSearchQuery('video')}
+                style={[styles.pill, searchQuery === 'videos' && styles.pillActive]}
+                onPress={() => setSearchQuery('videos')}
               >
-                <Text style={[styles.pillText, searchQuery === 'video' && styles.pillTextActive]}>
+                <Text style={[styles.pillText, searchQuery === 'videos' && styles.pillTextActive]}>
                   Videos
                 </Text>
               </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.pill, searchQuery === 'cloud' && styles.pillActive]}
+                onPress={() => setSearchQuery('cloud')}
+              >
+                <Text style={[styles.pillText, searchQuery === 'cloud' && styles.pillTextActive]}>
+                  Backed Up
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.pill, searchQuery === 'local' && styles.pillActive]}
+                onPress={() => setSearchQuery('local')}
+              >
+                <Text style={[styles.pillText, searchQuery === 'local' && styles.pillTextActive]}>
+                  Device Only
+                </Text>
+              </TouchableOpacity>
             </View>
+
             <DevicePhotoGrid
               searchQuery={searchQuery}
               backedUpIds={backedUpIds}
@@ -834,29 +844,40 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  // Search Bar
-  searchBarWrapper: {
-    paddingHorizontal: 18,
-    paddingVertical: 8,
+  // Native iOS Search Bar
+  nativeSearchBar: {
+    height: 38,
     backgroundColor: '#1c1c1e',
+    borderRadius: 10,
     flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: 10,
+    marginBottom: 10,
   },
-  searchTextInput: {
+  searchLeadingIcon: {
+    fontSize: 14,
+    marginRight: 8,
+    opacity: 0.6,
+  },
+  nativeSearchInput: {
     flex: 1,
-    backgroundColor: '#2c2c2e',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    height: 38,
     color: '#ffffff',
-    fontSize: 14,
+    fontSize: 15,
+    paddingVertical: 0,
   },
-  searchClearBtn: {
-    paddingHorizontal: 8,
+  searchClearCircle: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#3a3a3c',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  searchClearGlyph: {
+  searchClearIcon: {
     color: '#8e8e93',
-    fontSize: 14,
+    fontSize: 10,
+    fontWeight: '700',
   },
   // Canvas
   tabCanvas: {
