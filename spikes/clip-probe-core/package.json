@@ -1,0 +1,16 @@
+{
+  "name": "clip-probe-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure, runtime-agnostic logic shared by the on-device CLIP spike and its off-device reference: fixtures, vector maths, and the cross-modal scoring harness. No React Native and no ONNX imports, so the same scoring judges both runs.",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "5.9.2",
+    "vitest": "3.2.4"
+  }
+}

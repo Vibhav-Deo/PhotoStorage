@@ -1,0 +1,23 @@
+{
+  "name": "@photo-archive/infra",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AWS CDK app: bucket with Intelligent-Tiering, Cognito user and identity pools, DynamoDB change log, sync Lambda URL. Everything scales to zero (Req 9.4).",
+  "scripts": {
+    "build": "tsc --build tsconfig.json",
+    "typecheck": "tsc --build tsconfig.json",
+    "deploy": "npm run build && cdk deploy --all",
+    "synth": "npm run build && cdk synth",
+    "clean": "rm -rf dist cdk.out"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.840.0",
+    "@aws-sdk/util-dynamodb": "3.840.0",
+    "aws-cdk-lib": "2.200.1",
+    "constructs": "10.4.2"
+  },
+  "devDependencies": {
+    "aws-cdk": "2.1141.0"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "//": "Colocated `*.test.ts` files are part of this project rather than excluded from it. They have to belong to some project or they are neither type-checked by `tsc --build` nor lintable — ESLint's project service resolves a file through the nearest tsconfig.json, so a test the config excludes is a parsing error. The cost is compiled tests in `dist`, which is inert: this package is private, and `files` only ships `dist` for a CLI that never imports them.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "types": ["node"],
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [{ "path": "../core" }]
+}

@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "CLIP Text Spike",
+    "slug": "clip-text-spike",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "dev.spike.cliptext",
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "dev.spike.cliptext"
+    }
+  }
+}

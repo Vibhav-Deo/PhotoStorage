@@ -1,0 +1,32 @@
+{
+  "name": "spike-sqlite-heic-probe",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Throwaway Expo app for photo-archive task 0.2. Answers the two things published source cannot: whether the SQLite that expo-sqlite actually ships exposes FTS5 on iOS and Android, and what a HEIC decode and downscale really costs on each platform.",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "ios": "expo run:ios",
+    "android": "expo run:android",
+    "prebuild": "expo prebuild --clean",
+    "make-fixtures": "node scripts/make-fixtures.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "expo": "57.0.20",
+    "expo-asset": "57.0.16",
+    "expo-file-system": "57.0.6",
+    "expo-image": "57.0.4",
+    "expo-image-manipulator": "57.0.16",
+    "expo-media-library": "57.0.4",
+    "expo-sqlite": "57.0.2",
+    "expo-status-bar": "57.0.1",
+    "react": "19.2.3",
+    "react-native": "0.86.3"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "babel-preset-expo": "57.0.10",
+    "typescript": "5.9.2"
+  }
+}

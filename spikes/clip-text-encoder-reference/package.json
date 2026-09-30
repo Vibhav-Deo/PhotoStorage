@@ -1,0 +1,20 @@
+{
+  "name": "spike-clip-text-encoder-reference",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Off-device reference for photo-archive task 0.1. Runs both CLIP towers under onnxruntime-node against the same fixtures and the same scoring code as the on-device spike, so the shared-embedding-space question can be answered without a phone.",
+  "scripts": {
+    "reference": "tsx run.ts",
+    "dump-fixtures": "tsx run.ts --dump-fixtures",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "onnxruntime-node": "1.29.0",
+    "tsx": "4.20.6",
+    "typescript": "5.9.2",
+    "vitest": "3.2.4"
+  }
+}

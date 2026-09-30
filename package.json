@@ -1,0 +1,53 @@
+{
+  "name": "photo-archive",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cross-platform photo and video archive: Google Takeout import, device ingest, on-device semantic search, verified space reclamation.",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "infra"
+  ],
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 3000",
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json && npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "notices": "node scripts/notices/generate-notices.ts",
+    "notices:check": "node scripts/notices/generate-notices.ts --check",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run notices:check && npm run test"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/jszip": "3.4.1",
+    "@types/node": "22.20.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "eslint": "10.10.0",
+    "eslint-config-prettier": "10.1.8",
+    "fast-check": "4.9.0",
+    "prettier": "3.9.6",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.0",
+    "vite": "8.3.1",
+    "vitest": "3.2.7"
+  },
+  "dependencies": {
+    "jszip": "3.10.2",
+    "lucide-react": "1.48.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  }
+}

@@ -1,0 +1,136 @@
+{
+  "$comment": [
+    "Compliance inventory for every ML model artifact this product ships or",
+    "causes to be downloaded onto a user's device. Requirement 11.4.",
+    "Human-readable record and findings: ./README.md",
+    "Digests are sha256 of the artifact bytes. Where 'digestVerifiedLocally' is",
+    "true the digest was computed over bytes actually retrieved on this machine;",
+    "otherwise it is the digest the source registry publishes for that revision.",
+    "A revision is always a commit sha or an immutable tag, never a branch."
+  ],
+  "recordVersion": 1,
+  "retrievedAt": "2026-09-07T23:51:04Z",
+  "verifiedForTask": "0.3",
+  "license": {
+    "spdxId": "MIT",
+    "coveredWork": "OpenAI CLIP ViT-B/32",
+    "copyrightHolder": "Copyright (c) 2021 OpenAI",
+    "textFile": "models/openai-clip-mit.txt",
+    "textSha256": "987e63b32f6c89ff5160e429458a872ff048e6860b590a3912e938f9da8f14db",
+    "canonicalSource": "https://github.com/openai/CLIP/blob/main/LICENSE",
+    "canonicalRevision": "d05afc436d78f1c48dc0dbf8e5980a9d471f35f6",
+    "commercialUse": "permitted",
+    "noticeRequired": true
+  },
+  "upstreamWeights": {
+    "repo": "https://huggingface.co/openai/clip-vit-base-patch32",
+    "revision": "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268",
+    "declaresLicenseAtSource": false,
+    "note": "No LICENSE file and no license metadata in the Hugging Face repo. MIT is established from the openai/CLIP source repository, which is the origin of these weights."
+  },
+  "artifacts": [
+    {
+      "id": "rne-clip-image-fp32",
+      "consumer": "app",
+      "usedBy": "react-native-executorch@0.9.3 CLIP_VIT_BASE_PATCH32_IMAGE",
+      "url": "https://huggingface.co/software-mansion/react-native-executorch-clip-vit-base-patch32/resolve/v0.9.0/xnnpack/clip_vit_base_patch32_image_xnnpack_fp32.pte",
+      "repo": "software-mansion/react-native-executorch-clip-vit-base-patch32",
+      "revision": "68bad8b0cb33346612e74d143c5b99242b101053",
+      "revisionTag": "v0.9.0",
+      "path": "xnnpack/clip_vit_base_patch32_image_xnnpack_fp32.pte",
+      "sizeBytes": 351606400,
+      "sha256": "7aab2a60e82f7e4cdc27059018ed98abb4f7f325fbbc3afed65da2fffc421987",
+      "digestVerifiedLocally": false,
+      "licenseDeclaredAtSource": "mit",
+      "licenseDeclarationEvidence": ["repo card front matter", "xnnpack/config.json"]
+    },
+    {
+      "id": "rne-clip-image-int8",
+      "consumer": "app",
+      "usedBy": "react-native-executorch@0.9.3 CLIP_VIT_BASE_PATCH32_IMAGE_QUANTIZED",
+      "url": "https://huggingface.co/software-mansion/react-native-executorch-clip-vit-base-patch32/resolve/v0.9.0/xnnpack/clip_vit_base_patch32_image_xnnpack_int8.pte",
+      "repo": "software-mansion/react-native-executorch-clip-vit-base-patch32",
+      "revision": "68bad8b0cb33346612e74d143c5b99242b101053",
+      "revisionTag": "v0.9.0",
+      "path": "xnnpack/clip_vit_base_patch32_image_xnnpack_int8.pte",
+      "sizeBytes": 96351232,
+      "sha256": "7f00a41218c645cc7b66892f67b187ab4526b2714cfdbd20b84323f4d16e2a98",
+      "digestVerifiedLocally": false,
+      "licenseDeclaredAtSource": "mit",
+      "licenseDeclarationEvidence": ["repo card front matter", "xnnpack/config.json"]
+    },
+    {
+      "id": "rne-clip-text-fp32",
+      "consumer": "app",
+      "usedBy": "react-native-executorch@0.9.3 CLIP_VIT_BASE_PATCH32_TEXT",
+      "url": "https://huggingface.co/software-mansion/react-native-executorch-clip-vit-base-patch32/resolve/v0.9.0/xnnpack/clip_vit_base_patch32_text_xnnpack_fp32.pte",
+      "repo": "software-mansion/react-native-executorch-clip-vit-base-patch32",
+      "revision": "68bad8b0cb33346612e74d143c5b99242b101053",
+      "revisionTag": "v0.9.0",
+      "path": "xnnpack/clip_vit_base_patch32_text_xnnpack_fp32.pte",
+      "sizeBytes": 253953152,
+      "sha256": "6582434693e14bc9923a0442823cf933c649474d335a16d4b0485f5e0b5643b1",
+      "digestVerifiedLocally": false,
+      "licenseDeclaredAtSource": "mit",
+      "licenseDeclarationEvidence": ["repo card front matter", "xnnpack/config.json"]
+    },
+    {
+      "id": "rne-clip-tokenizer",
+      "consumer": "app",
+      "usedBy": "react-native-executorch@0.9.3 CLIP_VIT_BASE_PATCH32_TEXT tokenizerSource",
+      "url": "https://huggingface.co/software-mansion/react-native-executorch-clip-vit-base-patch32/resolve/v0.9.0/tokenizer.json",
+      "repo": "software-mansion/react-native-executorch-clip-vit-base-patch32",
+      "revision": "68bad8b0cb33346612e74d143c5b99242b101053",
+      "revisionTag": "v0.9.0",
+      "path": "tokenizer.json",
+      "sizeBytes": 2224112,
+      "sha256": "593e5dda3020e9bb2862d96003c04bb1a65af1c402fa48595a0ee30335792ca3",
+      "digestVerifiedLocally": true,
+      "licenseDeclaredAtSource": "mit",
+      "licenseDeclarationEvidence": ["repo card front matter", "xnnpack/config.json"],
+      "provenanceProof": "vocab, merges, and added_tokens are identical to openai/clip-vit-base-patch32 tokenizer.json at revision 3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268 (sha256 b556ac8c99757ffb677208af34bc8c6721572114111a6e0aaf5fa69ff0b8d842), compared field by field"
+    },
+    {
+      "id": "onnx-clip-full-quantized",
+      "consumer": "importer",
+      "usedBy": "task 2.9 embedding generation via onnxruntime-node; also the on-device fallback path",
+      "url": "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/d15189d7028b43f1d3e65039190477f6af591c2a/onnx/model_quantized.onnx",
+      "repo": "Xenova/clip-vit-base-patch32",
+      "revision": "d15189d7028b43f1d3e65039190477f6af591c2a",
+      "path": "onnx/model_quantized.onnx",
+      "sizeBytes": 153695702,
+      "sha256": "0898a3facfdb27f0a041e57649b4989cfd094e4a0040d6ae75ed69917dfc7328",
+      "digestVerifiedLocally": true,
+      "licenseDeclaredAtSource": null,
+      "licenseDeclarationEvidence": [],
+      "note": "Full CLIPModel export. vision_model.onnx and text_model.onnx omit the projection heads and are NOT in the joint space; do not substitute them."
+    },
+    {
+      "id": "onnx-clip-full-fp32",
+      "consumer": "importer",
+      "usedBy": "task 2.9, if the importer moves off the quantized export",
+      "url": "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/d15189d7028b43f1d3e65039190477f6af591c2a/onnx/model.onnx",
+      "repo": "Xenova/clip-vit-base-patch32",
+      "revision": "d15189d7028b43f1d3e65039190477f6af591c2a",
+      "path": "onnx/model.onnx",
+      "sizeBytes": 605799029,
+      "sha256": "8ac34fc990f890b4bec8d197de81f956fb135a65067e77fadbf8f053656ed711",
+      "digestVerifiedLocally": false,
+      "licenseDeclaredAtSource": null,
+      "licenseDeclarationEvidence": [],
+      "note": "Listed because it is the obvious substitution for onnx-clip-full-quantized. Not currently retrieved."
+    }
+  ],
+  "excluded": [
+    {
+      "id": "apple-mobileclip",
+      "reason": "research-only, non-commercial license; fails Requirement 11.4",
+      "licenseName": "Apple Machine Learning Research Model License (apple-amlr / apple-ascl)",
+      "licenseUrl": "https://github.com/apple/ml-mobileclip/blob/main/LICENSE_MODELS",
+      "licenseRevision": "main",
+      "licenseSha256": "30c59d255d2b4075ba11b81ce5aa0109c28d28138d66d52f7f5d8cbba814df8b",
+      "declaredAt": "https://huggingface.co/apple/MobileCLIP-S2 card metadata: license apple-amlr, license_name apple-ascl",
+      "presentInDependencyGraph": false
+    }
+  ]
+}
