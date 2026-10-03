@@ -13,7 +13,7 @@
  */
 
 import * as MediaLibrary from 'expo-media-library/legacy';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import type { SqlDriver } from '@photo-archive/core';
 import { origKey } from '@photo-archive/core';
 import type { DevicePhoto } from '../browse/DevicePhotoGrid.tsx';
@@ -108,7 +108,7 @@ export async function uploadAssetToS3(
   onProgress?.({ status: 'reading', progressPercent: 10 });
 
   // 1. Read binary bytes
-  const { bytes } = await readAssetBytes(asset);
+  const { bytes, localUri } = await readAssetBytes(asset);
   const byteSize = bytes.byteLength;
 
   onProgress?.({ status: 'hashing', progressPercent: 30, totalBytes: byteSize });
@@ -146,19 +146,43 @@ export async function uploadAssetToS3(
   });
 
   // 6. Direct HTTP binary PUT into Amazon S3 bucket
-  const response = await fetch(putUrl, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': mime,
-    },
-    body: bytes,
-  });
+  let uploadSuccess = false;
+  let lastError = '';
 
-  if (!response.ok) {
-    const errorBody = await response.text().catch(() => '');
-    throw new Error(
-      `S3 PutObject failed with HTTP ${response.status}: ${errorBody || response.statusText}`,
-    );
+  if (localUri && (localUri.startsWith('file://') || localUri.startsWith('/'))) {
+    try {
+      const uploadRes = await FileSystem.uploadAsync(putUrl, localUri, {
+        httpMethod: 'PUT',
+        uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+        headers: {
+          'Content-Type': mime,
+        },
+      });
+      if (uploadRes.status >= 200 && uploadRes.status < 300) {
+        uploadSuccess = true;
+      } else {
+        lastError = `HTTP ${uploadRes.status}: ${uploadRes.body || 'Upload failed'}`;
+      }
+    } catch (fsErr) {
+      console.warn('FileSystem.uploadAsync failed, falling back to fetch:', fsErr);
+    }
+  }
+
+  if (!uploadSuccess) {
+    const response = await fetch(putUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': mime,
+      },
+      body: bytes as unknown as BodyInit,
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => '');
+      throw new Error(
+        `S3 PutObject failed with HTTP ${response.status}: ${errorBody || lastError || response.statusText}`,
+      );
+    }
   }
 
   onProgress?.({

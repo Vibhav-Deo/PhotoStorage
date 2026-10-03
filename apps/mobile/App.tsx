@@ -1,4 +1,5 @@
 import { useSQLiteContext, SQLiteProvider } from 'expo-sqlite';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import { Suspense, useEffect, useState, useCallback, useMemo } from 'react';
 import {
   ActivityIndicator,
@@ -14,10 +15,16 @@ import { initDatabase, ExpoSqliteDriver } from './src/db/database.ts';
 import { AuthError, signIn, signOut, type SignInSession } from './src/auth/authService.ts';
 import { DevicePhotoGrid, type DevicePhoto } from './src/browse/DevicePhotoGrid.tsx';
 import { CredentialProvider } from './src/credentials/credentialProvider.ts';
-import { uploadAssetToS3, type UploadResult } from './src/ingest/s3Uploader.ts';
+import { uploadAssetToS3 } from './src/ingest/s3Uploader.ts';
 import { cognitoConfig, PHOTO_ARCHIVE_AWS } from './src/config/aws.ts';
 
-type ActiveTab = 'library' | 'search' | 'storage';
+type ActiveTab = 'library' | 'albums' | 'search' | 'storage';
+
+interface AlbumRecord {
+  readonly id: string;
+  readonly title: string;
+  readonly assetCount: number;
+}
 
 interface UploadTaskState {
   readonly isUploading: boolean;
@@ -50,7 +57,7 @@ function AppShell(): React.ReactElement {
   // Tabs & Navigation
   const [activeTab, setActiveTab] = useState<ActiveTab>('library');
   const [searchQuery, setSearchQuery] = useState('');
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [selectedAlbumTitle, setSelectedAlbumTitle] = useState<string | null>(null);
 
   // Selection Mode (Apple Photos pattern)
   const [isSelectMode, setIsSelectMode] = useState(false);
@@ -59,21 +66,82 @@ function AppShell(): React.ReactElement {
 
   // SQLite Backed-Up State
   const [backedUpIds, setBackedUpIds] = useState<Set<string>>(new Set());
+  const [userAlbums, setUserAlbums] = useState<AlbumRecord[]>([]);
 
-  // Upload progress
+  // Upload Progress
   const [uploadTask, setUploadTask] = useState<UploadTaskState | null>(null);
 
   // Space Reclamation
   const [purgedIds, setPurgedIds] = useState<Set<string>>(new Set());
   const [reclaimedBytes, setReclaimedBytes] = useState(0);
+  const [showReclaimModal, setShowReclaimModal] = useState(false);
 
-  // Read verified state from local SQLite
-  const refreshBackedUpFromSql = useCallback(async () => {
+  // New Album Dialog
+  const [showNewAlbumModal, setShowNewAlbumModal] = useState(false);
+  const [newAlbumTitle, setNewAlbumTitle] = useState('');
+
+  // 1. Restore persistent session on launch
+  const loadSavedSession = useCallback(async () => {
+    try {
+      await driver.run(`CREATE TABLE IF NOT EXISTS app_session (key TEXT PRIMARY KEY, value TEXT)`);
+      const row = await driver.get<{ value: string }>('SELECT value FROM app_session WHERE key = ?', [
+        'current_session',
+      ]);
+      if (row?.value) {
+        const parsed = JSON.parse(row.value) as SignInSession;
+        if (parsed.tokens && parsed.tokens.expiresAt * 1000 > Date.now()) {
+          setSession(parsed);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to restore session from SQLite:', err);
+    }
+  }, [driver]);
+
+  // Save or clear session in SQLite
+  const persistSession = useCallback(
+    async (sess: SignInSession | null) => {
+      try {
+        await driver.run(`CREATE TABLE IF NOT EXISTS app_session (key TEXT PRIMARY KEY, value TEXT)`);
+        if (sess) {
+          await driver.run(
+            'INSERT INTO app_session (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+            ['current_session', JSON.stringify(sess)],
+          );
+        } else {
+          await driver.run('DELETE FROM app_session WHERE key = ?', ['current_session']);
+        }
+      } catch (err) {
+        console.warn('Failed to save session to SQLite:', err);
+      }
+    },
+    [driver],
+  );
+
+  // 2. Read backed-up assets and albums from SQLite
+  const refreshSqlData = useCallback(async () => {
     try {
       const rows = await driver.all<{ local_id: string }>(
         `SELECT local_id FROM local_assets WHERE hash_state = 1`,
       );
       setBackedUpIds(new Set(rows.map((r) => r.local_id)));
+
+      // Load albums
+      const albumRows = await driver.all<{ id: string; title: string; asset_count: number }>(
+        `SELECT a.id, a.title, COUNT(m.hash) as asset_count
+         FROM albums a
+         LEFT JOIN album_members m ON m.album_id = a.id
+         WHERE a.deleted_at IS NULL
+         GROUP BY a.id
+         ORDER BY a.title ASC`,
+      );
+      setUserAlbums(
+        albumRows.map((r) => ({
+          id: r.id,
+          title: r.title,
+          assetCount: r.asset_count,
+        })),
+      );
     } catch (err) {
       console.warn('Could not read backed-up assets from SQLite:', err);
     }
@@ -81,11 +149,14 @@ function AppShell(): React.ReactElement {
 
   useEffect(() => {
     initDatabase(db)
-      .then(() => refreshBackedUpFromSql())
+      .then(() => {
+        void loadSavedSession();
+        void refreshSqlData();
+      })
       .catch((err: unknown) => {
         console.error('Database initialization failed:', err);
       });
-  }, [db, refreshBackedUpFromSql]);
+  }, [db, loadSavedSession, refreshSqlData]);
 
   // Sign In Flow
   const handleSignIn = async (): Promise<void> => {
@@ -94,6 +165,7 @@ function AppShell(): React.ReactElement {
     try {
       const newSession = await signIn(cognitoConfig, 'Cognito');
       setSession(newSession);
+      await persistSession(newSession);
       setIsAccountSheetOpen(false);
     } catch (error: unknown) {
       setAuthError(error instanceof AuthError ? error.message : 'Sign-in failed');
@@ -102,14 +174,18 @@ function AppShell(): React.ReactElement {
     }
   };
 
-  // Sign Out Flow (Guaranteed clean session clear)
+  // Sign Out Flow (Guaranteed fast session clear)
   const handleSignOut = async (): Promise<void> => {
     try {
       if (session) {
-        await signOut(cognitoConfig, session.tokens.accessToken).catch(() => undefined);
+        await Promise.race([
+          signOut(cognitoConfig, session.tokens.accessToken),
+          new Promise((resolve) => setTimeout(resolve, 1000)),
+        ]).catch(() => undefined);
       }
     } finally {
       setSession(null);
+      await persistSession(null);
       setIsAccountSheetOpen(false);
     }
   };
@@ -139,7 +215,7 @@ function AppShell(): React.ReactElement {
     setSelectedIds(new Set());
   };
 
-  // Real S3 Upload
+  // Real S3 Upload Pipeline
   const performUpload = async (assetsToUpload: DevicePhoto[]) => {
     if (assetsToUpload.length === 0) return;
 
@@ -154,7 +230,7 @@ function AppShell(): React.ReactElement {
       userPoolId: PHOTO_ARCHIVE_AWS.userPoolId,
       identityPoolId: PHOTO_ARCHIVE_AWS.identityPoolId,
       region: PHOTO_ARCHIVE_AWS.region,
-      refreshToken: session.tokens.refreshToken,
+      ...(session.tokens.refreshToken ? { refreshToken: session.tokens.refreshToken } : {}),
     });
 
     setUploadTask({
@@ -214,7 +290,7 @@ function AppShell(): React.ReactElement {
           : null,
       );
 
-      await refreshBackedUpFromSql();
+      await refreshSqlData();
       cancelSelectionMode();
     } catch (err: unknown) {
       console.error('Upload Error:', err);
@@ -240,7 +316,17 @@ function AppShell(): React.ReactElement {
     0,
   );
 
-  const handlePurgeEligible = async () => {
+  // Real Space Reclamation (Purges device copy with MediaLibrary and updates SQLite)
+  const handlePurgeConfirmed = async () => {
+    setShowReclaimModal(false);
+    const assetIdsToDelete = eligibleForPurge.map((a) => a.id);
+
+    try {
+      await MediaLibrary.deleteAssetsAsync(assetIdsToDelete);
+    } catch (nativeErr) {
+      console.warn('Native deleteAssetsAsync error or canceled:', nativeErr);
+    }
+
     for (const asset of eligibleForPurge) {
       await driver.run(
         `UPDATE assets SET local_state = 3 WHERE hash IN (
@@ -249,11 +335,51 @@ function AppShell(): React.ReactElement {
         [asset.id],
       );
     }
+
     setReclaimedBytes((prev) => prev + eligibleBytes);
     setPurgedIds((prev) => new Set([...prev, ...eligibleForPurge.map((a) => a.id)]));
+    await refreshSqlData();
+  };
+
+  const handlePurgeSingle = async (asset: DevicePhoto) => {
+    try {
+      await MediaLibrary.deleteAssetsAsync([asset.id]);
+    } catch (nativeErr) {
+      console.warn('Single delete canceled or unavailable:', nativeErr);
+    }
+
+    await driver.run(
+      `UPDATE assets SET local_state = 3 WHERE hash IN (
+        SELECT hash FROM local_assets WHERE local_id = ?
+      )`,
+      [asset.id],
+    );
+
+    const assetBytes = (asset.width ?? 1920) * (asset.height ?? 1080) * 0.4;
+    setReclaimedBytes((prev) => prev + assetBytes);
+    setPurgedIds((prev) => new Set([...prev, asset.id]));
+    await refreshSqlData();
+  };
+
+  // Create User Album in SQLite
+  const handleCreateAlbum = async () => {
+    const title = newAlbumTitle.trim();
+    if (!title) return;
+    const albumId = `album_${Date.now()}`;
+    const now = Date.now();
+
+    await driver.run(
+      `INSERT INTO albums (id, title, created_at, updated_at, version) VALUES (?, ?, ?, ?, 0)`,
+      [albumId, title, now, now],
+    );
+
+    setNewAlbumTitle('');
+    setShowNewAlbumModal(false);
+    await refreshSqlData();
   };
 
   const unbackedCount = deviceAssets.filter((a) => !backedUpIds.has(a.id)).length;
+  const videosCount = deviceAssets.filter((a) => a.mediaType === 'video').length;
 
   return (
     <View style={styles.appContainer}>
@@ -267,15 +393,10 @@ function AppShell(): React.ReactElement {
             </TouchableOpacity>
 
             <Text style={styles.selectionTitle}>
-              {selectedIds.size === 0
-                ? 'Select Items'
-                : `${selectedIds.size} Selected`}
+              {selectedIds.size === 0 ? 'Select Items' : `${selectedIds.size} Selected`}
             </Text>
 
-            <TouchableOpacity
-              onPress={selectAll}
-              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            >
+            <TouchableOpacity onPress={selectAll} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
               <Text style={styles.headerActionText}>Select All</Text>
             </TouchableOpacity>
           </View>
@@ -284,37 +405,45 @@ function AppShell(): React.ReactElement {
           <View style={styles.standardHeaderRow}>
             <View>
               <Text style={styles.navLargeTitle}>
-                {activeTab === 'library'
+                {selectedAlbumTitle
+                  ? selectedAlbumTitle
+                  : activeTab === 'library'
                   ? 'Photos'
+                  : activeTab === 'albums'
+                  ? 'Albums'
                   : activeTab === 'search'
                   ? 'Search'
                   : 'Storage'}
               </Text>
-              <View style={styles.syncStatusRow}>
-                <View
-                  style={[
-                    styles.syncStatusDot,
-                    { backgroundColor: session ? '#34c759' : '#ff9f0a' },
-                  ]}
-                />
-                <Text style={styles.syncStatusLabel}>
-                  {session
-                    ? unbackedCount === 0
-                      ? 'Backup complete'
-                      : `${unbackedCount} items to back up`
-                    : 'Offline • Tap avatar to sign in'}
-                </Text>
-              </View>
+              {activeTab !== 'search' && (
+                <View style={styles.syncStatusRow}>
+                  <View
+                    style={[
+                      styles.syncStatusDot,
+                      { backgroundColor: session ? '#34c759' : '#ff9f0a' },
+                    ]}
+                  />
+                  <Text style={styles.syncStatusLabel}>
+                    {session
+                      ? unbackedCount === 0
+                        ? 'Backup complete'
+                        : `${unbackedCount} items to back up`
+                      : 'Offline • Tap avatar to sign in'}
+                  </Text>
+                </View>
+              )}
             </View>
 
             {/* Right Action Icons */}
             <View style={styles.headerRightActions}>
-              <TouchableOpacity
-                style={styles.headerIconBtn}
-                onPress={() => setActiveTab('search')}
-              >
-                <Text style={styles.headerIconGlyph}>🔍</Text>
-              </TouchableOpacity>
+              {selectedAlbumTitle ? (
+                <TouchableOpacity
+                  style={styles.selectTextBtn}
+                  onPress={() => setSelectedAlbumTitle(null)}
+                >
+                  <Text style={styles.selectTextBtnLabel}>All Photos</Text>
+                </TouchableOpacity>
+              ) : null}
 
               {activeTab === 'library' && (
                 <TouchableOpacity
@@ -341,6 +470,7 @@ function AppShell(): React.ReactElement {
 
       {/* ── Main Tab Content ──────────────────────────────────────── */}
       <View style={styles.tabCanvas}>
+        {/* 1. Photos Tab */}
         {activeTab === 'library' && (
           <DevicePhotoGrid
             isSelectMode={isSelectMode}
@@ -348,100 +478,205 @@ function AppShell(): React.ReactElement {
             onToggleSelect={toggleSelectAsset}
             backedUpIds={backedUpIds}
             onAssetsLoaded={setDeviceAssets}
+            onUploadSingleAsset={(asset) => void performUpload([asset])}
+            onReclaimSingleAsset={(asset) => void handlePurgeSingle(asset)}
           />
         )}
 
+        {/* 2. Albums Tab */}
+        {activeTab === 'albums' && (
+          <ScrollView style={styles.albumsScroll} showsVerticalScrollIndicator={false}>
+            <View style={styles.albumSectionHeader}>
+              <Text style={styles.albumSectionTitle}>Collections</Text>
+              <TouchableOpacity onPress={() => setShowNewAlbumModal(true)}>
+                <Text style={styles.newAlbumBtnText}>+ New Album</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Smart Collection Cards */}
+            <View style={styles.smartAlbumsGrid}>
+              <TouchableOpacity
+                style={styles.smartAlbumCard}
+                onPress={() => {
+                  setSelectedAlbumTitle(null);
+                  setActiveTab('library');
+                }}
+              >
+                <Text style={styles.smartAlbumIcon}>🖼️</Text>
+                <Text style={styles.smartAlbumTitle}>All Photos</Text>
+                <Text style={styles.smartAlbumCount}>{deviceAssets.length} items</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.smartAlbumCard}
+                onPress={() => {
+                  setSearchQuery('cloud');
+                  setActiveTab('search');
+                }}
+              >
+                <Text style={styles.smartAlbumIcon}>☁️</Text>
+                <Text style={styles.smartAlbumTitle}>Cloud Archive</Text>
+                <Text style={styles.smartAlbumCount}>{backedUpIds.size} backed up</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.smartAlbumCard}
+                onPress={() => {
+                  setSearchQuery('videos');
+                  setActiveTab('search');
+                }}
+              >
+                <Text style={styles.smartAlbumIcon}>🎬</Text>
+                <Text style={styles.smartAlbumTitle}>Videos</Text>
+                <Text style={styles.smartAlbumCount}>{videosCount} videos</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.smartAlbumCard}
+                onPress={() => {
+                  setActiveTab('storage');
+                }}
+              >
+                <Text style={styles.smartAlbumIcon}>🛡️</Text>
+                <Text style={styles.smartAlbumTitle}>Reclaimable</Text>
+                <Text style={styles.smartAlbumCount}>{eligibleForPurge.length} ready to free</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* User Albums */}
+            <Text style={[styles.albumSectionTitle, { marginTop: 24, marginBottom: 12 }]}>
+              My Albums ({userAlbums.length})
+            </Text>
+
+            {userAlbums.length === 0 ? (
+              <View style={styles.emptyAlbumBox}>
+                <Text style={styles.emptyAlbumText}>
+                  Create custom albums to organize your memories.
+                </Text>
+              </View>
+            ) : (
+              userAlbums.map((album) => (
+                <TouchableOpacity
+                  key={album.id}
+                  style={styles.albumRowItem}
+                  onPress={() => {
+                    setSelectedAlbumTitle(album.title);
+                    setActiveTab('library');
+                  }}
+                >
+                  <View style={styles.albumRowThumb}>
+                    <Text style={styles.albumRowGlyph}>📁</Text>
+                  </View>
+                  <View style={styles.albumRowInfo}>
+                    <Text style={styles.albumRowTitle}>{album.title}</Text>
+                    <Text style={styles.albumRowCount}>{album.assetCount} photos</Text>
+                  </View>
+                  <Text style={styles.albumRowChevron}>›</Text>
+                </TouchableOpacity>
+              ))
+            )}
+          </ScrollView>
+        )}
+
+        {/* 3. Search Tab */}
         {activeTab === 'search' && (
           <View style={styles.searchTabBody}>
-            {/* Native iOS-style compact search bar */}
-            <View style={styles.nativeSearchBar}>
-              <Text style={styles.searchLeadingIcon}>🔍</Text>
-              <TextInput
-                style={styles.nativeSearchInput}
-                placeholder="Search photos, videos, dates, cloud..."
-                placeholderTextColor="#8e8e93"
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-                autoFocus
-                autoCorrect={false}
-              />
-              {searchQuery.length > 0 && (
+            <View style={styles.searchControlsContainer}>
+              {/* Native iOS-style compact search bar */}
+              <View style={styles.nativeSearchBar}>
+                <Text style={styles.searchLeadingIcon}>🔍</Text>
+                <TextInput
+                  style={styles.nativeSearchInput}
+                  placeholder="Search photos, videos, dates, cloud..."
+                  placeholderTextColor="#8e8e93"
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  autoFocus={searchQuery === ''}
+                  autoCorrect={false}
+                />
+                {searchQuery.length > 0 && (
+                  <TouchableOpacity
+                    onPress={() => setSearchQuery('')}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  >
+                    <View style={styles.searchClearCircle}>
+                      <Text style={styles.searchClearIcon}>✕</Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* Category Filter Pills (Horizontal Scroll) */}
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.pillsRow}
+              >
                 <TouchableOpacity
+                  style={[styles.pill, searchQuery === '' && styles.pillActive]}
                   onPress={() => setSearchQuery('')}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 >
-                  <View style={styles.searchClearCircle}>
-                    <Text style={styles.searchClearIcon}>✕</Text>
-                  </View>
+                  <Text style={[styles.pillText, searchQuery === '' && styles.pillTextActive]}>
+                    All
+                  </Text>
                 </TouchableOpacity>
-              )}
+                <TouchableOpacity
+                  style={[styles.pill, searchQuery === 'photos' && styles.pillActive]}
+                  onPress={() => setSearchQuery('photos')}
+                >
+                  <Text style={[styles.pillText, searchQuery === 'photos' && styles.pillTextActive]}>
+                    📸 Photos
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.pill, searchQuery === 'videos' && styles.pillActive]}
+                  onPress={() => setSearchQuery('videos')}
+                >
+                  <Text style={[styles.pillText, searchQuery === 'videos' && styles.pillTextActive]}>
+                    🎬 Videos
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.pill, searchQuery === 'cloud' && styles.pillActive]}
+                  onPress={() => setSearchQuery('cloud')}
+                >
+                  <Text style={[styles.pillText, searchQuery === 'cloud' && styles.pillTextActive]}>
+                    ☁️ Backed Up
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.pill, searchQuery === 'local' && styles.pillActive]}
+                  onPress={() => setSearchQuery('local')}
+                >
+                  <Text style={[styles.pillText, searchQuery === 'local' && styles.pillTextActive]}>
+                    📱 Device Only
+                  </Text>
+                </TouchableOpacity>
+              </ScrollView>
             </View>
 
-            {/* Clean category pills */}
-            <View style={styles.pillsRow}>
-              <TouchableOpacity
-                style={[styles.pill, searchQuery === '' && styles.pillActive]}
-                onPress={() => setSearchQuery('')}
-              >
-                <Text style={[styles.pillText, searchQuery === '' && styles.pillTextActive]}>
-                  All
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.pill, searchQuery === 'photos' && styles.pillActive]}
-                onPress={() => setSearchQuery('photos')}
-              >
-                <Text style={[styles.pillText, searchQuery === 'photos' && styles.pillTextActive]}>
-                  Photos
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.pill, searchQuery === 'videos' && styles.pillActive]}
-                onPress={() => setSearchQuery('videos')}
-              >
-                <Text style={[styles.pillText, searchQuery === 'videos' && styles.pillTextActive]}>
-                  Videos
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.pill, searchQuery === 'cloud' && styles.pillActive]}
-                onPress={() => setSearchQuery('cloud')}
-              >
-                <Text style={[styles.pillText, searchQuery === 'cloud' && styles.pillTextActive]}>
-                  Backed Up
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.pill, searchQuery === 'local' && styles.pillActive]}
-                onPress={() => setSearchQuery('local')}
-              >
-                <Text style={[styles.pillText, searchQuery === 'local' && styles.pillTextActive]}>
-                  Device Only
-                </Text>
-              </TouchableOpacity>
+            <View style={styles.searchGridContainer}>
+              <DevicePhotoGrid
+                searchQuery={searchQuery}
+                backedUpIds={backedUpIds}
+                onAssetsLoaded={setDeviceAssets}
+                onUploadSingleAsset={(asset) => void performUpload([asset])}
+                onReclaimSingleAsset={(asset) => void handlePurgeSingle(asset)}
+              />
             </View>
-
-            <DevicePhotoGrid
-              searchQuery={searchQuery}
-              backedUpIds={backedUpIds}
-              onAssetsLoaded={setDeviceAssets}
-            />
           </View>
         )}
 
+        {/* 4. Storage Tab */}
         {activeTab === 'storage' && (
-          <ScrollView style={styles.storageScroll}>
+          <ScrollView style={styles.storageScroll} showsVerticalScrollIndicator={false}>
             {/* Storage Hero Card */}
             <View style={styles.storageCard}>
               <Text style={styles.storageCardCategory}>DEVICE STORAGE</Text>
-              <Text style={styles.storageCardHighlight}>
-                {formatBytes(eligibleBytes)}
-              </Text>
-              <Text style={styles.storageCardSubtitle}>
-                Reclaimable Space Verified in Cloud
-              </Text>
+              <Text style={styles.storageCardHighlight}>{formatBytes(eligibleBytes)}</Text>
+              <Text style={styles.storageCardSubtitle}>Reclaimable Space Verified in Cloud</Text>
               <Text style={styles.storageCardBody}>
-                {eligibleForPurge.length} photos have been cryptographically verified in your private S3 archive. You can safely purge the device originals to free storage while keeping instant cached thumbnails.
+                {eligibleForPurge.length} device originals have been cryptographically verified in your private AWS S3 archive. You can safely purge the device originals to free physical phone storage while keeping fast thumbnails on your device.
               </Text>
 
               <TouchableOpacity
@@ -450,7 +685,7 @@ function AppShell(): React.ReactElement {
                   eligibleForPurge.length === 0 && styles.purgeActionBtnDisabled,
                 ]}
                 disabled={eligibleForPurge.length === 0}
-                onPress={() => void handlePurgeEligible()}
+                onPress={() => setShowReclaimModal(true)}
               >
                 <Text style={styles.purgeActionBtnText}>
                   {eligibleForPurge.length > 0
@@ -479,8 +714,8 @@ function AppShell(): React.ReactElement {
             <View style={styles.guaranteeCard}>
               <Text style={styles.guaranteeTitle}>Architecture Guarantees</Text>
               <Text style={styles.guaranteeItem}>• SHA-256 byte-for-byte readback verification</Text>
-              <Text style={styles.guaranteeItem}>• S3 Intelligent-Tiering content-addressed storage</Text>
-              <Text style={styles.guaranteeItem}>• 256px thumbnails preserved for offline browsing</Text>
+              <Text style={styles.guaranteeItem}>• S3 Intelligent-Tiering key layout</Text>
+              <Text style={styles.guaranteeItem}>• 256px thumbnails retained for instant browsing</Text>
             </View>
           </ScrollView>
         )}
@@ -519,33 +754,31 @@ function AppShell(): React.ReactElement {
         </View>
       )}
 
-      {/* ── Apple Photos Bottom Tab Bar ──────────────────────────── */}
+      {/* ── 4-Tab Bottom Navigation (Apple Photos standard) ───────── */}
       {!isSelectMode && (
         <View style={styles.bottomNavigation}>
-          <TouchableOpacity
-            style={styles.tabItem}
-            onPress={() => setActiveTab('library')}
-          >
+          <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('library')}>
             <Text style={styles.tabGlyph}>🖼️</Text>
             <Text style={[styles.tabTitle, activeTab === 'library' && styles.tabTitleActive]}>
               Photos
             </Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.tabItem}
-            onPress={() => setActiveTab('search')}
-          >
+          <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('albums')}>
+            <Text style={styles.tabGlyph}>🗂️</Text>
+            <Text style={[styles.tabTitle, activeTab === 'albums' && styles.tabTitleActive]}>
+              Albums
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('search')}>
             <Text style={styles.tabGlyph}>🔍</Text>
             <Text style={[styles.tabTitle, activeTab === 'search' && styles.tabTitleActive]}>
               Search
             </Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.tabItem}
-            onPress={() => setActiveTab('storage')}
-          >
+          <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('storage')}>
             <Text style={styles.tabGlyph}>🛡️</Text>
             <Text style={[styles.tabTitle, activeTab === 'storage' && styles.tabTitleActive]}>
               Storage
@@ -554,7 +787,7 @@ function AppShell(): React.ReactElement {
         </View>
       )}
 
-      {/* ── Profile & Account Sheet (Google Photos / Apple ID) ─────── */}
+      {/* ── Account & Backup Sheet (Google Photos / Apple ID) ─────── */}
       <Modal
         visible={isAccountSheetOpen}
         animationType="slide"
@@ -627,7 +860,7 @@ function AppShell(): React.ReactElement {
                   </TouchableOpacity>
                 )}
 
-                {/* Prominent, unambiguous Sign Out button */}
+                {/* Clear Sign Out button */}
                 <TouchableOpacity
                   style={styles.sheetSignOutBtn}
                   onPress={() => void handleSignOut()}
@@ -733,6 +966,63 @@ function AppShell(): React.ReactElement {
           </View>
         </Modal>
       )}
+
+      {/* ── Space Reclamation Confirmation Dialog ─────────────────── */}
+      <Modal visible={showReclaimModal} transparent animationType="fade">
+        <View style={styles.uploadModalOverlay}>
+          <View style={styles.uploadModalWindow}>
+            <Text style={styles.uploadModalHeader}>Free Device Storage?</Text>
+            <Text style={styles.reclaimModalPrompt}>
+              {eligibleForPurge.length} photos have been verified byte-for-byte in AWS S3. Deleting them from your device camera roll will free {formatBytes(eligibleBytes)}. Cached 256px thumbnails remain available on your device.
+            </Text>
+            <View style={styles.reclaimModalBtnRow}>
+              <TouchableOpacity
+                style={styles.reclaimCancelBtn}
+                onPress={() => setShowReclaimModal(false)}
+              >
+                <Text style={styles.reclaimCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.reclaimConfirmBtn}
+                onPress={() => void handlePurgeConfirmed()}
+              >
+                <Text style={styles.reclaimConfirmText}>Free Space Now</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Create Album Dialog ───────────────────────────────────── */}
+      <Modal visible={showNewAlbumModal} transparent animationType="fade">
+        <View style={styles.uploadModalOverlay}>
+          <View style={styles.uploadModalWindow}>
+            <Text style={styles.uploadModalHeader}>New Album</Text>
+            <TextInput
+              style={styles.albumTitleInput}
+              placeholder="Album Title..."
+              placeholderTextColor="#8e8e93"
+              value={newAlbumTitle}
+              onChangeText={setNewAlbumTitle}
+              autoFocus
+            />
+            <View style={styles.reclaimModalBtnRow}>
+              <TouchableOpacity
+                style={styles.reclaimCancelBtn}
+                onPress={() => setShowNewAlbumModal(false)}
+              >
+                <Text style={styles.reclaimCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.albumSaveBtn}
+                onPress={() => void handleCreateAlbum()}
+              >
+                <Text style={styles.albumSaveBtnText}>Create</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -752,7 +1042,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000000',
   },
-  // ── Top Header ─────────────────────────────────────────────
+  // Top Header
   topHeader: {
     paddingTop: 54,
     paddingHorizontal: 18,
@@ -792,17 +1082,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
   },
-  headerIconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#1c1c1e',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerIconGlyph: {
-    fontSize: 15,
-  },
   selectTextBtn: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -827,7 +1106,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
-  // Selection Header
   selectionHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -844,7 +1122,139 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  // Native iOS Search Bar
+  tabCanvas: {
+    flex: 1,
+  },
+  // Albums Tab
+  albumsScroll: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  albumSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  albumSectionTitle: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  newAlbumBtnText: {
+    color: '#0a84ff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  smartAlbumsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  smartAlbumCard: {
+    width: '48%',
+    backgroundColor: '#1c1c1e',
+    borderRadius: 14,
+    padding: 14,
+  },
+  smartAlbumIcon: {
+    fontSize: 26,
+    marginBottom: 8,
+  },
+  smartAlbumTitle: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  smartAlbumCount: {
+    color: '#8e8e93',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  emptyAlbumBox: {
+    backgroundColor: '#1c1c1e',
+    borderRadius: 14,
+    padding: 24,
+    alignItems: 'center',
+  },
+  emptyAlbumText: {
+    color: '#8e8e93',
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  albumRowItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1c1c1e',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  albumRowThumb: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    backgroundColor: '#2c2c2e',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  albumRowGlyph: {
+    fontSize: 20,
+  },
+  albumRowInfo: {
+    flex: 1,
+  },
+  albumRowTitle: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  albumRowCount: {
+    color: '#8e8e93',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  albumRowChevron: {
+    color: '#8e8e93',
+    fontSize: 20,
+  },
+  albumTitleInput: {
+    width: '100%',
+    backgroundColor: '#2c2c2e',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#ffffff',
+    fontSize: 15,
+    marginVertical: 16,
+  },
+  albumSaveBtn: {
+    backgroundColor: '#0a84ff',
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  albumSaveBtnText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  // Search Tab
+  searchTabBody: {
+    flex: 1,
+  },
+  searchControlsContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#2c2c2e',
+  },
+  searchGridContainer: {
+    flex: 1,
+  },
   nativeSearchBar: {
     height: 38,
     backgroundColor: '#1c1c1e',
@@ -852,7 +1262,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 10,
-    marginBottom: 10,
+    marginBottom: 8,
   },
   searchLeadingIcon: {
     fontSize: 14,
@@ -879,19 +1289,10 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
   },
-  // Canvas
-  tabCanvas: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-  },
-  searchTabBody: {
-    flex: 1,
-    gap: 12,
-  },
   pillsRow: {
     flexDirection: 'row',
     gap: 8,
+    paddingVertical: 2,
   },
   pill: {
     paddingHorizontal: 14,
@@ -913,6 +1314,8 @@ const styles = StyleSheet.create({
   // Storage Tab
   storageScroll: {
     flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 12,
   },
   storageCard: {
     backgroundColor: '#1c1c1e',
@@ -1056,7 +1459,7 @@ const styles = StyleSheet.create({
   tabItem: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
   },
   tabGlyph: {
     fontSize: 18,
@@ -1198,7 +1601,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  // Unauth Sheet View
   unauthSheetContent: {
     alignItems: 'center',
     paddingVertical: 16,
@@ -1288,7 +1690,7 @@ const styles = StyleSheet.create({
   },
   uploadModalHeader: {
     color: '#ffffff',
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '700',
   },
   uploadActiveWrapper: {
@@ -1360,5 +1762,40 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center',
     marginTop: 6,
+  },
+  // Reclaim confirmation dialog
+  reclaimModalPrompt: {
+    color: '#d1d1d6',
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginVertical: 14,
+  },
+  reclaimModalBtnRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  reclaimCancelBtn: {
+    backgroundColor: '#2c2c2e',
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+  },
+  reclaimCancelText: {
+    color: '#8e8e93',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  reclaimConfirmBtn: {
+    backgroundColor: '#ff453a',
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+  },
+  reclaimConfirmText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

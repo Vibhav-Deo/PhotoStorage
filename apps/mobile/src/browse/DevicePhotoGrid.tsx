@@ -15,9 +15,8 @@ import {
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const COLUMNS = 3;
-const PADDING = 18;
-const GAP = 3;
-const ITEM_SIZE = Math.floor((SCREEN_WIDTH - PADDING * 2 - GAP * (COLUMNS - 1)) / COLUMNS);
+const GAP = 2;
+const ITEM_SIZE = Math.floor((SCREEN_WIDTH - GAP * (COLUMNS - 1)) / COLUMNS);
 
 export interface DevicePhoto {
   readonly id: string;
@@ -29,13 +28,24 @@ export interface DevicePhoto {
   readonly height?: number;
 }
 
-export interface DevicePhotoGridProps {
+export const MONTH_NAMES = [
+  'january', 'february', 'march', 'april', 'may', 'june',
+  'july', 'august', 'september', 'october', 'november', 'december'
+];
+const MONTH_SHORTS = [
+  'jan', 'feb', 'mar', 'apr', 'may', 'jun',
+  'jul', 'aug', 'sep', 'oct', 'nov', 'dec'
+];
+
+interface DevicePhotoGridProps {
   readonly searchQuery?: string;
   readonly isSelectMode?: boolean;
   readonly selectedIds?: Set<string>;
   readonly onToggleSelect?: (asset: DevicePhoto) => void;
   readonly backedUpIds?: Set<string>;
   readonly onAssetsLoaded?: (assets: DevicePhoto[]) => void;
+  readonly onUploadSingleAsset?: (asset: DevicePhoto) => void;
+  readonly onReclaimSingleAsset?: (asset: DevicePhoto) => void;
 }
 
 export function DevicePhotoGrid({
@@ -45,12 +55,15 @@ export function DevicePhotoGrid({
   onToggleSelect,
   backedUpIds = new Set(),
   onAssetsLoaded,
+  onUploadSingleAsset,
+  onReclaimSingleAsset,
 }: DevicePhotoGridProps): React.ReactElement {
   const [assets, setAssets] = useState<DevicePhoto[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [permissionError, setPermissionError] = useState<string | null>(null);
-  const [selectedAsset, setSelectedAsset] = useState<DevicePhoto | null>(null);
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [showInfoSheet, setShowInfoSheet] = useState(false);
 
   const checkAndLoadPhotos = useCallback(async (): Promise<void> => {
     try {
@@ -87,8 +100,8 @@ export function DevicePhotoGrid({
       try {
         result = await MediaLibrary.getAssetsAsync({
           first: 150,
-          mediaType: ['photo', 'video'] as unknown as MediaLibrary.MediaTypeValue[],
-          sortBy: ['creationTime'] as unknown as MediaLibrary.SortByType[],
+          mediaType: ['photo', 'video'] as any,
+          sortBy: ['creationTime'] as any,
         });
       } catch {
         result = await MediaLibrary.getAssetsAsync({
@@ -149,10 +162,11 @@ export function DevicePhotoGrid({
       if (asset.creationTime) {
         const d = new Date(asset.creationTime);
         const year = String(d.getFullYear());
-        const monthLong = d.toLocaleString('default', { month: 'long' }).toLowerCase();
-        const monthShort = d.toLocaleString('default', { month: 'short' }).toLowerCase();
+        const monthIdx = d.getMonth();
+        const monthLong = MONTH_NAMES[monthIdx] ?? '';
+        const monthShort = MONTH_SHORTS[monthIdx] ?? '';
         const day = String(d.getDate());
-        dateString = `${year} ${monthLong} ${monthShort} ${day} ${d.toLocaleDateString()}`.toLowerCase();
+        dateString = `${year} ${monthLong} ${monthShort} ${day} ${monthIdx + 1}/${day}/${year}`;
       }
 
       const isBackedUp = backedUpIds.has(asset.id);
@@ -264,7 +278,7 @@ export function DevicePhotoGrid({
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.gridContent}
         columnWrapperStyle={styles.columnWrapper}
-        renderItem={({ item }) => {
+        renderItem={({ item, index }) => {
           const isSelected = selectedIds.has(item.id);
           const isBackedUp = backedUpIds.has(item.id);
 
@@ -279,7 +293,7 @@ export function DevicePhotoGrid({
                 if (isSelectMode) {
                   onToggleSelect?.(item);
                 } else {
-                  setSelectedAsset(item);
+                  setSelectedIndex(index);
                 }
               }}
             >
@@ -321,55 +335,159 @@ export function DevicePhotoGrid({
         }}
       />
 
-      {/* Full preview modal */}
-      {selectedAsset && (
+      {/* ── Native Fullscreen Media Viewer ───────────────────────── */}
+      {selectedIndex !== null && filteredAssets[selectedIndex] && (
         <Modal
-          visible={Boolean(selectedAsset)}
+          visible
           transparent
           animationType="fade"
-          onRequestClose={() => setSelectedAsset(null)}
+          onRequestClose={() => {
+            setSelectedIndex(null);
+            setShowInfoSheet(false);
+          }}
         >
-          <View style={styles.modalOverlay}>
-            <TouchableOpacity
-              style={styles.modalCloseButton}
-              onPress={() => setSelectedAsset(null)}
-            >
-              <Text style={styles.modalCloseText}>✕ Close</Text>
-            </TouchableOpacity>
+          <View style={styles.viewerOverlay}>
+            {/* Viewer Top Bar */}
+            <View style={styles.viewerTopBar}>
+              <TouchableOpacity
+                style={styles.viewerCloseBtn}
+                onPress={() => {
+                  setSelectedIndex(null);
+                  setShowInfoSheet(false);
+                }}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                <Text style={styles.viewerCloseText}>✕ Close</Text>
+              </TouchableOpacity>
 
-            <View style={styles.modalImageContainer}>
+              <Text style={styles.viewerCounterText}>
+                {selectedIndex + 1} of {filteredAssets.length}
+              </Text>
+
+              <TouchableOpacity
+                style={[
+                  styles.viewerInfoBtn,
+                  showInfoSheet && styles.viewerInfoBtnActive,
+                ]}
+                onPress={() => setShowInfoSheet((prev) => !prev)}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                <Text style={styles.viewerInfoGlyph}>ℹ️</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Viewer Image Canvas with Navigation Arrows */}
+            <View style={styles.viewerCanvas}>
+              {selectedIndex > 0 && (
+                <TouchableOpacity
+                  style={[styles.viewerNavArrow, styles.viewerNavArrowLeft]}
+                  onPress={() => setSelectedIndex(selectedIndex - 1)}
+                  hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+                >
+                  <Text style={styles.viewerArrowText}>‹</Text>
+                </TouchableOpacity>
+              )}
+
               <Image
-                source={{ uri: selectedAsset.uri }}
-                style={styles.modalImage}
+                source={{ uri: filteredAssets[selectedIndex].uri }}
+                style={styles.viewerMainImage}
                 contentFit="contain"
                 transition={200}
               />
+
+              {selectedIndex < filteredAssets.length - 1 && (
+                <TouchableOpacity
+                  style={[styles.viewerNavArrow, styles.viewerNavArrowRight]}
+                  onPress={() => setSelectedIndex(selectedIndex + 1)}
+                  hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+                >
+                  <Text style={styles.viewerArrowText}>›</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
-            <View style={styles.modalFooter}>
-              <View style={styles.modalMetaRow}>
-                <Text style={styles.modalTitle} numberOfLines={1}>
-                  {selectedAsset.filename ?? 'Photo'}
-                </Text>
-                {backedUpIds.has(selectedAsset.id) ? (
-                  <View style={styles.modalBackedUpPill}>
-                    <Text style={styles.modalBackedUpText}>✓ Backed Up to S3</Text>
-                  </View>
-                ) : (
-                  <View style={styles.modalLocalPill}>
-                    <Text style={styles.modalLocalText}>Local Device Only</Text>
-                  </View>
-                )}
-              </View>
-              {selectedAsset.width && selectedAsset.height ? (
-                <Text style={styles.modalSubtitle}>
-                  {selectedAsset.width} × {selectedAsset.height} •{' '}
-                  {selectedAsset.creationTime
-                    ? new Date(selectedAsset.creationTime).toLocaleDateString()
-                    : 'Unknown date'}
-                </Text>
-              ) : null}
+            {/* Viewer Bottom Action Bar */}
+            <View style={styles.viewerBottomBar}>
+              {backedUpIds.has(filteredAssets[selectedIndex].id) ? (
+                <View style={styles.viewerStatusPill}>
+                  <Text style={styles.viewerStatusPillText}>✓ Saved to Cloud S3</Text>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={styles.viewerBackupActionBtn}
+                  onPress={() => {
+                    const current = filteredAssets[selectedIndex];
+                    if (current) onUploadSingleAsset?.(current);
+                  }}
+                >
+                  <Text style={styles.viewerBackupActionText}>☁️ Back Up This Photo</Text>
+                </TouchableOpacity>
+              )}
+
+              {backedUpIds.has(filteredAssets[selectedIndex].id) && onReclaimSingleAsset && (
+                <TouchableOpacity
+                  style={styles.viewerReclaimBtn}
+                  onPress={() => {
+                    const current = filteredAssets[selectedIndex];
+                    if (current) onReclaimSingleAsset(current);
+                  }}
+                >
+                  <Text style={styles.viewerReclaimBtnText}>Free Device Space</Text>
+                </TouchableOpacity>
+              )}
             </View>
+
+            {/* Apple-style EXIF & Cloud Info Sheet */}
+            {showInfoSheet && (
+              <View style={styles.infoSheetPanel}>
+                <View style={styles.infoSheetHeader}>
+                  <Text style={styles.infoSheetTitle}>Photo Details</Text>
+                  <TouchableOpacity onPress={() => setShowInfoSheet(false)}>
+                    <Text style={styles.infoSheetDismiss}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.infoSheetRow}>
+                  <Text style={styles.infoSheetLabel}>File Name</Text>
+                  <Text style={styles.infoSheetValue} numberOfLines={1}>
+                    {filteredAssets[selectedIndex].filename ?? 'Photo'}
+                  </Text>
+                </View>
+
+                <View style={styles.infoSheetRow}>
+                  <Text style={styles.infoSheetLabel}>Date Captured</Text>
+                  <Text style={styles.infoSheetValue}>
+                    {filteredAssets[selectedIndex].creationTime
+                      ? new Date(filteredAssets[selectedIndex].creationTime).toLocaleString()
+                      : 'Unknown'}
+                  </Text>
+                </View>
+
+                {filteredAssets[selectedIndex].width && filteredAssets[selectedIndex].height ? (
+                  <View style={styles.infoSheetRow}>
+                    <Text style={styles.infoSheetLabel}>Dimensions</Text>
+                    <Text style={styles.infoSheetValue}>
+                      {filteredAssets[selectedIndex].width} × {filteredAssets[selectedIndex].height}
+                    </Text>
+                  </View>
+                ) : null}
+
+                <View style={styles.infoSheetRow}>
+                  <Text style={styles.infoSheetLabel}>Cloud Archive</Text>
+                  <Text
+                    style={
+                      backedUpIds.has(filteredAssets[selectedIndex].id)
+                        ? styles.infoSheetValueGreen
+                        : styles.infoSheetValueYellow
+                    }
+                  >
+                    {backedUpIds.has(filteredAssets[selectedIndex].id)
+                      ? '✓ Verified in Amazon S3'
+                      : 'On Device (Not Uploaded)'}
+                  </Text>
+                </View>
+              </View>
+            )}
           </View>
         </Modal>
       )}
@@ -383,18 +501,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
   },
-  countText: { color: '#98a394', fontSize: 12, fontFamily: 'monospace' },
-  refreshLink: { color: '#9acd7c', fontSize: 12, fontWeight: '500' },
-  gridContent: { paddingBottom: 40 },
+  countText: { color: '#8e8e93', fontSize: 13, fontWeight: '500' },
+  refreshLink: { color: '#0a84ff', fontSize: 13, fontWeight: '600' },
+  gridContent: { paddingBottom: 60 },
   columnWrapper: { gap: GAP, marginBottom: GAP },
   photoContainer: {
     width: ITEM_SIZE,
     height: ITEM_SIZE,
-    borderRadius: 6,
     overflow: 'hidden',
-    backgroundColor: '#1b1d19',
+    backgroundColor: '#1c1c1e',
     position: 'relative',
   },
   photoContainerSelected: {
@@ -542,47 +660,183 @@ const styles = StyleSheet.create({
     color: '#98a394',
     fontSize: 12,
   },
-  modalOverlay: {
+  // Native Fullscreen Media Viewer Styles
+  viewerOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.92)',
+    backgroundColor: '#000000',
     justifyContent: 'space-between',
     paddingTop: 54,
-    paddingBottom: 36,
+    paddingBottom: 24,
   },
-  modalCloseButton: {
-    alignSelf: 'flex-end',
+  viewerTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingVertical: 8,
+    height: 44,
   },
-  modalCloseText: {
-    color: '#f2f4ec',
+  viewerCloseBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: 'rgba(28, 28, 30, 0.8)',
+    borderRadius: 14,
+  },
+  viewerCloseText: {
+    color: '#ffffff',
     fontSize: 14,
     fontWeight: '600',
   },
-  modalImageContainer: {
+  viewerCounterText: {
+    color: '#8e8e93',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  viewerInfoBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(28, 28, 30, 0.8)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewerInfoBtnActive: {
+    backgroundColor: '#0a84ff',
+  },
+  viewerInfoGlyph: {
+    fontSize: 16,
+  },
+  viewerCanvas: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    position: 'relative',
   },
-  modalImage: {
+  viewerMainImage: {
     width: '100%',
     height: '100%',
   },
-  modalFooter: {
+  viewerNavArrow: {
+    position: 'absolute',
+    top: '50%',
+    marginTop: -28,
+    width: 44,
+    height: 56,
+    backgroundColor: 'rgba(28, 28, 30, 0.65)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+    borderRadius: 8,
+  },
+  viewerNavArrowLeft: {
+    left: 12,
+  },
+  viewerNavArrowRight: {
+    right: 12,
+  },
+  viewerArrowText: {
+    color: '#ffffff',
+    fontSize: 32,
+    fontWeight: '300',
+    lineHeight: 34,
+  },
+  viewerBottomBar: {
     paddingHorizontal: 20,
-    paddingTop: 12,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  viewerStatusPill: {
+    backgroundColor: 'rgba(52, 199, 89, 0.15)',
+    borderWidth: 1,
+    borderColor: '#34c759',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 18,
+  },
+  viewerStatusPillText: {
+    color: '#34c759',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  viewerBackupActionBtn: {
+    backgroundColor: '#0a84ff',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 18,
+  },
+  viewerBackupActionText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  viewerReclaimBtn: {
+    backgroundColor: 'rgba(255, 69, 58, 0.15)',
+    borderWidth: 1,
+    borderColor: '#ff453a',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 18,
+  },
+  viewerReclaimBtnText: {
+    color: '#ff453a',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  infoSheetPanel: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#1c1c1e',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#38383a',
+    gap: 12,
+  },
+  infoSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  infoSheetTitle: {
+    color: '#ffffff',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  infoSheetDismiss: {
+    color: '#8e8e93',
+    fontSize: 16,
+    padding: 4,
+  },
+  infoSheetRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
   },
-  modalTitle: {
-    color: '#f2f4ec',
+  infoSheetLabel: {
+    color: '#8e8e93',
+    fontSize: 13,
+  },
+  infoSheetValue: {
+    color: '#ffffff',
     fontSize: 13,
     fontWeight: '500',
+    maxWidth: 220,
   },
-  modalSubtitle: {
-    color: '#98a394',
-    fontSize: 11,
-    marginTop: 4,
-    fontFamily: 'monospace',
+  infoSheetValueGreen: {
+    color: '#34c759',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  infoSheetValueYellow: {
+    color: '#ff9f0a',
+    fontSize: 13,
+    fontWeight: '500',
   },
 });
 

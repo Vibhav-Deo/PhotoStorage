@@ -7,10 +7,9 @@
  * Requirements: 5.3, 5.7
  */
 
-import { FlashList } from '@shopify/flash-list';
 import { Image } from 'expo-image';
-import { useCallback } from 'react';
-import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { Dimensions, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { thumbKey } from '@photo-archive/core';
 import { ThumbhashPlaceholder } from '../browse/ThumbhashPlaceholder.tsx';
 import type { MediaUrlProvider } from '../browse/mediaUrlProvider.ts';
@@ -43,12 +42,29 @@ function ResultCell({
   tenantPrefix: string;
   onPress: ((hash: string) => void) | undefined;
 }): React.ReactElement {
+  const [uri, setUri] = useState<string>('');
+
+  useEffect(() => {
+    let active = true;
+    const key = thumbKey(tenantPrefix, item.hash);
+    urlProvider
+      .urlsFor([key])
+      .then((map) => {
+        if (active) {
+          const resolved = map.get(key);
+          if (resolved) setUri(resolved);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+    };
+  }, [urlProvider, tenantPrefix, item.hash]);
+
   const handlePress = useCallback(() => {
     onPress?.(item.hash);
   }, [onPress, item.hash]);
-
-  const key = thumbKey(tenantPrefix, item.hash);
-  const uri = urlProvider.url(key);
 
   return (
     <TouchableOpacity
@@ -59,13 +75,15 @@ function ResultCell({
       <View style={StyleSheet.absoluteFill}>
         <ThumbhashPlaceholder thumbhash={item.thumbhash} />
       </View>
-      <Image
-        contentFit="cover"
-        recyclingKey={item.hash}
-        source={{ uri }}
-        style={StyleSheet.absoluteFill}
-        transition={100}
-      />
+      {uri ? (
+        <Image
+          contentFit="cover"
+          recyclingKey={item.hash}
+          source={{ uri }}
+          style={StyleSheet.absoluteFill}
+          transition={100}
+        />
+      ) : null}
       <View style={styles.rankBadge}>
         <Text style={styles.rankText}>#{item.rank}</Text>
       </View>
@@ -107,9 +125,8 @@ export function SearchResultGrid({
 
   return (
     <View style={styles.container}>
-      <FlashList
+      <FlatList
         data={results as SearchResultItem[]}
-        estimatedItemSize={CELL_SIZE}
         keyExtractor={keyExtractor}
         numColumns={COLUMNS}
         renderItem={renderItem}
